@@ -1,0 +1,75 @@
+"""Central configuration management using pydantic-settings."""
+
+from pathlib import Path
+from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # Qdrant Configuration
+    qdrant_url: str = Field(
+        default="http://127.0.0.1:6333",
+        description="Qdrant vector database URL",
+    )
+    qdrant_collection: str = Field(
+        default="tech_books",
+        description="Qdrant collection name for storing embeddings",
+    )
+
+    # Ollama Configuration (running natively on host)
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama API base URL",
+    )
+    llm_model: str = Field(
+        default="llama3.3:70b",
+        description="LLM model identifier for text generation",
+    )
+    embedding_model: str = Field(
+        default="BAAI/bge-large-en-v1.5",
+        description="HuggingFace embedding model identifier",
+    )
+
+    # Data Configuration
+    docs_dir: Path = Field(
+        default=Path("./data/books"),
+        description="Directory containing documents to ingest",
+    )
+
+    # Optional: Performance Settings
+    chunk_size: int = Field(
+        default=1024,
+        description="Text chunk size for document splitting",
+    )
+    chunk_overlap: int = Field(
+        default=200,
+        description="Overlap between consecutive chunks",
+    )
+    batch_size: int = Field(
+        default=32,
+        description="Batch size for embedding generation",
+    )
+    top_k: int = Field(
+        default=5,
+        description="Number of top results to retrieve from vector store",
+    )
+
+    def __init__(self, **kwargs) -> None:
+        """Initialize settings and ensure docs_dir exists."""
+        super().__init__(**kwargs)
+        self.docs_dir.mkdir(parents=True, exist_ok=True)
+
+
+# Global settings instance
+settings: Settings = Settings()
