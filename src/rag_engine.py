@@ -61,7 +61,9 @@ class RAGEngine:
             llm = Ollama(
                 model=settings.llm_model, 
                 base_url=settings.ollama_base_url, 
-                request_timeout=120.0
+                request_timeout=360.0,
+                context_window=8192,
+                additional_kwargs={"num_ctx": 8192}
             )
         except Exception as e:
             logger.error(f"Failed to load LLM: {e}")

@@ -33,11 +33,11 @@ class Settings(BaseSettings):
         description="Ollama API base URL",
     )
     llm_model: str = Field(
-        default="llama3.3:70b",
+        default="mistral-nemo:12b",
         description="LLM model identifier for text generation",
     )
     embedding_model: str = Field(
-        default="BAAI/bge-large-en-v1.5",
+        default="BAAI/bge-m3",
         description="HuggingFace embedding model identifier",
     )
 
