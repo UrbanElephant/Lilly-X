@@ -57,11 +57,11 @@ class Settings(BaseSettings):
         description="Overlap between consecutive chunks",
     )
     batch_size: int = Field(
-        default=32,
+        default=16,
         description="Batch size for embedding generation",
     )
     top_k: int = Field(
-        default=5,
+        default=3,
         description="Number of top results to retrieve from vector store",
     )
 

@@ -63,6 +63,7 @@ class RAGEngine:
                 base_url=settings.ollama_base_url, 
                 request_timeout=360.0,
                 context_window=8192,
+                system_prompt="You are a helpful AI assistant. Answer the user's question concisely using the provided context. If the answer is not in the context, say so.",
                 additional_kwargs={"num_ctx": 8192}
             )
         except Exception as e:
