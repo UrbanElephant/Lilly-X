@@ -98,6 +98,8 @@ The system uses `pydantic-settings` for configuration management. All settings c
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model (1024-dim) |
 | `CHUNK_SIZE` | `1024` | Text chunk size for splitting |
 | `CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `BATCH_SIZE` | `16` | Batch size for embeddings (optimized for 32GB VRAM) |
+| `TOP_K` | `3` | Number of retrieval results (optimized for latency) |
 | `DOCS_DIR` | `./data/books` | Document directory |
 
 ## Qdrant Optimization
@@ -124,7 +126,11 @@ The `compose.yaml` is optimized for high-RAM environments:
 ### Memory Optimization
 - Qdrant configured to keep vectors in RAM (mmap_threshold=0)
 - Embedding cache in `./models` directory
-- Efficient batch processing with configurable batch sizes
+- Efficient batch processing with configurable batch sizes (default: 16)
+
+### Latency Optimization
+- **TOP_K=3**: Reduced from 5 to significantly speed up prompt evaluation time for 1024-token chunks.
+- **System Prompt**: Concise instruction configured in `src/rag_engine.py` to reduce generation time.
 
 ## Quick Start
 
