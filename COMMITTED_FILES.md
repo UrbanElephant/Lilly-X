@@ -1,0 +1,20 @@
+# Committed Files
+.env.template
+.gitignore
+INGESTION.md
+README.md
+VERIFICATION.md
+check_install.md
+compose.yaml
+requirements.txt
+run_ingestion.sh
+src/__init__.py
+src/app.py
+src/config.py
+src/database.py
+src/ingest.py
+src/query.py
+src/rag_engine.py
+test_connection.py
+verify_qdrant.sh
+visibility_check.md
