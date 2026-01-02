@@ -147,7 +147,7 @@ Access the UI at: **http://localhost:8501**
 ## Requirements
 
 ### Software
-- Python 3.10+
+- **Python 3.12** (recommended) - Python 3.10/3.11 compatible, **3.14+ not supported**
 - Podman (rootless mode supported)
 - Ollama installed on host
 - Streamlit for UI
@@ -162,6 +162,219 @@ Access the UI at: **http://localhost:8501**
 ```bash
 export HSA_OVERRIDE_GFX_VERSION=11.0.2
 ```
+
+## Troubleshooting & Compatibility
+
+### Python Version Requirements
+
+**✅ Supported:** Python 3.12 (Recommended)  
+**🔧 Compatible:** Python 3.10, 3.11  
+**❌ Unsupported:** Python 3.14+
+
+#### Python 3.14+ Incompatibility
+
+Python 3.14 and newer versions have **dependency conflicts** with current LlamaIndex and related packages. Symptoms include:
+- Import errors with `llama-index-core`
+- Missing `asyncio` library errors
+- Weak reference errors with NoneType objects
+- Streamlit compatibility issues
+
+**Solution:** Use Python 3.12 for stable operation.
+
+#### Switching to Python 3.12
+
+If you're experiencing environment issues:
+
+```bash
+# Remove existing environment
+rm -rf venv venv_314_broken
+
+# Create fresh venv with Python 3.12
+python3.12 -m venv venv
+
+# Activate and install dependencies
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Verify installation
+bash verify_setup.sh
+```
+
+### Environment Persistence Issues
+
+#### Problem: Settings Not Applied
+
+If the system doesn't use `mistral-nemo:12b` or correct chunk sizes after restart:
+
+**Cause:** The `.env` file is not being read or is missing.
+
+**Solution:**
+
+```bash
+# 1. Create .env from template
+cp .env.template .env
+
+# 2. Verify settings
+cat .env | grep -E "LLM_MODEL|CHUNK_SIZE"
+
+# 3. Expected output:
+# LLM_MODEL=mistral-nemo:12b
+# CHUNK_SIZE=1024
+```
+
+#### Problem: Old Model Still Loading
+
+If `ibm/granite4:32b-a9b-h` is still being used:
+
+```bash
+# Check default in config.py
+grep "default=" src/config.py | grep llm_model
+
+# Should show: default="mistral-nemo:12b"
+```
+
+If not, the code update didn't apply. Re-pull the latest changes or manually update `src/config.py`.
+
+### Maintenance Commands
+
+#### Reset Environment (Clean Slate)
+
+```bash
+# Full environment reset
+rm -rf venv
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### Verify System Health
+
+```bash
+# Run verification script
+bash verify_setup.sh
+
+# Manual verification
+source venv/bin/activate
+python -c "import llama_index; print(f'LlamaIndex: {llama_index.__version__}')"
+python -c "import streamlit; print(f'Streamlit: {streamlit.__version__}')"
+```
+
+#### Check Configuration
+
+```bash
+# Verify model settings
+grep -E "mistral-nemo|BAAI/bge-m3|chunk_size.*1024" src/config.py
+
+# Verify environment template
+cat .env.template
+```
+
+#### Clear Embedding Cache
+
+If you need to regenerate embeddings:
+
+```bash
+rm -rf models/
+# Models will re-download on next ingestion
+```
+
+#### Reset Qdrant Database
+
+```bash
+# Stop and remove Qdrant container
+podman stop qdrant
+podman rm qdrant
+
+# Remove stored vectors
+podman volume rm qdrant_storage
+
+# Restart Qdrant
+podman run -d --name qdrant -p 6333:6333 -p 6334:6334 \
+  -v qdrant_storage:/qdrant/storage:z qdrant/qdrant:latest
+
+# Re-ingest documents
+source venv/bin/activate
+python -m src.ingest
+```
+
+### Common Issues
+
+#### Issue: "Module not found" errors
+
+**Solution:** Reinstall dependencies with Python 3.12
+```bash
+rm -rf venv
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### Issue: Streamlit won't start
+
+**Check:**
+```bash
+source venv/bin/activate
+which streamlit
+streamlit --version
+```
+
+**Fix:**
+```bash
+pip install --upgrade streamlit
+```
+
+#### Issue: Qdrant connection errors
+
+**Verify Qdrant is running:**
+```bash
+curl http://localhost:6333/healthz
+```
+
+**Restart if needed:**
+```bash
+podman restart qdrant
+```
+
+#### Issue: ROCm/GPU not detected
+
+**Verify ROCm environment:**
+```bash
+echo $HSA_OVERRIDE_GFX_VERSION
+# Should output: 11.0.2
+```
+
+**Set permanently:**
+```bash
+# Add to ~/.bashrc
+echo 'export HSA_OVERRIDE_GFX_VERSION=11.0.2' >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### Issue: Out of Memory (OOM) errors
+
+The `num_ctx=8192` setting in `src/rag_engine.py` prevents most OOM issues. If you still experience them:
+
+**Check context window:**
+```bash
+grep "num_ctx" src/rag_engine.py
+# Should show: additional_kwargs={"num_ctx": 8192}
+```
+
+**Reduce batch size if needed:**
+```bash
+# Edit .env
+BATCH_SIZE=16  # Reduce from 32
+```
+
+### Getting Help
+
+If issues persist after following troubleshooting steps:
+
+1. **Verify Python version:** `python --version` (should be 3.12.x)
+2. **Check git status:** `git status` (should be clean)
+3. **Review logs:** Check `streamlit_launch.log` or console output
+4. **Run verification:** `bash verify_setup.sh`
 
 ## License
 
