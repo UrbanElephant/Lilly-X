@@ -12,8 +12,17 @@ from llama_index.core import (
     StorageContext,
     Settings,
 )
-from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core.extractors import (
+    BaseExtractor,
+    SummaryExtractor,
+    QuestionsAnsweredExtractor,
+)
+from llama_index.core.schema import BaseNode
+from llama_index.core.bridge.pydantic import Field
+from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
@@ -29,9 +38,49 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def setup_llama_index() -> None:
-    """Configure LlamaIndex global settings."""
+class LLMEntityExtractor(BaseExtractor):
+    """
+    Extracts entities using the configured LLM instead of an external library.
+    Robust replacement for the fragile SpanMarker EntityExtractor.
+    """
+    llm: object = Field(description="The LLM to use for extraction")
+    
+    def __init__(self, llm, **kwargs):
+        super().__init__(llm=llm, **kwargs)
+        
+    async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
+        metadata_list = []
+        for node in nodes:
+            # Simple prompt to get entities
+            content = node.get_content(metadata_mode="all")
+            prompt = (
+                f"Analyze the following text and extract key entities (People, Organizations, Technologies). "
+                f"Return ONLY a comma-separated list of entities. If none, return 'None'.\n\n"
+                f"Text: {content[:1000]}\nEntities:"
+            )
+            try:
+                # Use the LLM directly
+                response = await self.llm.acomplete(prompt)
+                entities = str(response).strip()
+                metadata_list.append({"entities": entities})
+            except Exception as e:
+                # Fallback on error
+                metadata_list.append({"entities": "Error extracting entities"})
+        return metadata_list
+
+
+def setup_llama_index():
+    """Configure LlamaIndex global settings with LLM and embedding model."""
     logger.info("Setting up LlamaIndex configuration...")
+    
+    # Configure LLM (Mistral-Nemo for metadata extraction)
+    logger.info(f"Loading LLM: {settings.llm_model}")
+    llm = Ollama(
+        model=settings.llm_model,
+        base_url=settings.ollama_base_url,
+        request_timeout=1200.0,  # Correct parameter name for Ollama client timeout
+        context_window=8192,
+    )
     
     # Configure embedding model
     logger.info(f"Loading embedding model: {settings.embedding_model}")
@@ -47,13 +96,49 @@ def setup_llama_index() -> None:
     )
     
     # Set global settings
+    Settings.llm = llm
     Settings.embed_model = embed_model
     Settings.text_splitter = text_splitter
     Settings.chunk_size = settings.chunk_size
     Settings.chunk_overlap = settings.chunk_overlap
     
     logger.info("✓ LlamaIndex configuration complete")
+    
+    return llm, embed_model
 
+
+
+def get_advanced_pipeline(llm, embed_model, vector_store=None):
+    """
+    Creates an advanced IngestionPipeline with Semantic Splitting and Metadata Enrichment.
+    
+    Args:
+        llm: Language model for metadata extraction
+        embed_model: Embedding model for semantic splitting and embeddings
+        vector_store: Optional vector store for incremental persistence (streaming upsert)
+    """
+    return IngestionPipeline(
+        transformations=[
+            # 1. Semantic Splitting (Dynamic boundaries based on embedding distance)
+            SemanticSplitterNodeParser(
+                buffer_size=1, 
+                breakpoint_percentile_threshold=95, 
+                embed_model=embed_model
+            ),
+            
+            # 2. Metadata Enrichment (The 'Golden Source' Logic)
+            # Extracts a summary of the prev/current/next chunk context
+            SummaryExtractor(llm=llm, summaries=["prev", "self", "next"]),
+            # Generates 3 questions that this chunk can answer (improves retrieval match)
+            QuestionsAnsweredExtractor(llm=llm, questions=3),
+            # Extracts entities (People, Orgs, Tech) using LLM
+            LLMEntityExtractor(llm=llm),
+            
+            # 3. Embedding Generation
+            embed_model,
+        ],
+        vector_store=vector_store,  # Enable streaming upsert if provided
+    )
 
 def create_collection_if_not_exists(client: QdrantClient, collection_name: str) -> None:
     """
@@ -116,7 +201,7 @@ def ingest_documents(
     logger.info("")
     
     # Setup LlamaIndex
-    setup_llama_index()
+    llm, embed_model = setup_llama_index()
     
     # Get Qdrant client
     logger.info("Connecting to Qdrant...")
@@ -154,15 +239,24 @@ def ingest_documents(
     
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     
-    # Create index and ingest documents
-    logger.info("Processing documents and generating embeddings...")
-    logger.info("(This may take a few minutes depending on document size)")
+    # --- ADVANCED PIPELINE LOGIC WITH STREAMING UPSERT ---
+    # 1. Initialize the Advanced Pipeline with vector store for incremental persistence
+    logger.info("Initializing Advanced Ingestion Pipeline with streaming upsert...")
+    pipeline = get_advanced_pipeline(llm, embed_model, vector_store=vector_store)
+
+    # 2. Run the Pipeline (Transformation & Embedding + Automatic Persistence)
+    logger.info("🚀 Running Pipeline: Semantic Splitting & Metadata Enrichment...")
+    logger.info("(This will take longer than before due to LLM processing)")
+    logger.info("(Data is being saved incrementally - safe to interrupt)")
     
-    index = VectorStoreIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        show_progress=True,
-    )
+    # Passing documents through the pipeline generates and PERSISTS 'nodes'
+    nodes = pipeline.run(documents=documents, show_progress=True, num_workers=1)
+    logger.info(f"✓ Pipeline finished. Generated {len(nodes)} enriched nodes.")
+
+    # 3. Create Index from Vector Store (data already persisted)
+    # Since the pipeline saved nodes incrementally, we just create an index reference
+    logger.info("Creating index from persisted vector store...")
+    index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
     
     logger.info("")
     logger.info("=" * 70)

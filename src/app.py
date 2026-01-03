@@ -3,6 +3,23 @@ import time
 from src.rag_engine import RAGEngine
 from src.config import settings
 
+
+def format_metadata(metadata: dict) -> str:
+    """Formats rich metadata for display if present."""
+    extras = []
+    
+    # Format Questions
+    if "questions_this_excerpt_can_answer" in metadata:
+        q_str = metadata["questions_this_excerpt_can_answer"]
+        extras.append(f"**❓ Relevante Fragen:**\n{q_str}")
+    
+    # Format Entities
+    if "excerpt_keywords" in metadata:
+        e_str = metadata["excerpt_keywords"]
+        extras.append(f"**🏢 Entitäten:**\n{e_str}")
+        
+    return "\n\n".join(extras)
+
 # Page Config
 st.set_page_config(
     page_title="Lilly-X - Local Knowledge Base",
@@ -50,6 +67,10 @@ for message in st.session_state.messages:
                 for src in message["sources"]:
                     st.markdown(f"**{src['source']}** (Score: {src['score']:.2f})")
                     st.caption(src['content'])
+                    # Display metadata if present
+                    meta_text = format_metadata(src.get('metadata', {}))
+                    if meta_text:
+                        st.info(meta_text)
                     st.markdown("---")
 
 # Chat Input
@@ -82,14 +103,21 @@ if prompt := st.chat_input("What would you like to know?"):
                 if result.source_nodes:
                     with st.expander("📚 View Sources"):
                         for node in result.source_nodes:
+                            meta = node.node.metadata
+                            meta_output = format_metadata(meta)
+                            
                             src_info = {
-                                "source": node.node.metadata.get('file_name', 'Unknown'),
+                                "source": meta.get('file_name', 'Unknown'),
                                 "content": node.node.get_content().replace('\n', ' ')[:300] + "...",
-                                "score": node.score
+                                "score": node.score,
+                                "metadata": meta  # Store metadata in history
                             }
                             source_data.append(src_info)
                             st.markdown(f"**{src_info['source']}** (Score: {src_info['score']:.2f})")
                             st.caption(src_info['content'])
+                            # Display metadata
+                            if meta_output:
+                                st.info(meta_output)
                             st.markdown("---")
             
             # Add Assistant Message to History

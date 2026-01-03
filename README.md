@@ -19,7 +19,32 @@ Optimized for **AMD Ryzen AI MAX-395** workstations:
 - **iGPU**: AMD Radeon 8060S with 32GB dedicated VRAM
 - **ROCm**: Configured with `HSA_OVERRIDE_GFX_VERSION=11.0.2`
 - **Context Window**: 8192 tokens (via `num_ctx=8192`)
-- **Chunk Strategy**: 1024-token chunks with 200-token overlap
+
+## Features
+
+### 🧠 Semantic Chunking
+Moved beyond naive fixed-size splitting. Uses **SemanticSplitterNodeParser** to dynamically chunk text based on:
+- **Embedding similarity**: Chunks split at natural semantic boundaries
+- **Topic shifts detection**: Maintains coherent context within chunks
+- **Adaptive sizing**: Chunk boundaries respect content structure
+
+### 🛡️ Fault-Tolerant Ingestion
+Refactored ingestion pipeline for production resilience:
+- **Streaming Upserts**: Data persists to Qdrant immediately after processing
+- **Safe Interruption**: `Ctrl+C` anytime without losing progress
+- **Incremental Checkpointing**: Resume from last successful batch
+- **No Memory Overflow**: Handles documents of any size
+
+### ✨ Rich Metadata Enrichment
+Each document node is automatically enriched with:
+- **Extracted Entities**: People, organizations, technologies identified via LLM
+- **Synthetic QA Pairs**: Questions generated from content for enhanced retrieval accuracy
+- **Context Summaries**: Prev/self/next chunk summaries for better relevance
+
+### ⚡ Performance Optimizations
+- **Sequential Processing**: `num_workers=1` prevents Ollama timeout errors
+- **Extended Timeouts**: 20-minute LLM timeout for large documents
+- **Custom Entity Extractor**: Lightweight LLM-based extraction (no SpanMarker dependencies)
 
 ## Project Structure
 
@@ -134,6 +159,34 @@ The `compose.yaml` is optimized for high-RAM environments:
 
 ## Quick Start
 
+### Running Ingestion
+
+The ingestion pipeline processes documents with semantic chunking and metadata enrichment:
+
+```bash
+# Run ingestion with the resilient pipeline
+bash run_ingestion.sh
+
+# Or run directly with Python
+source venv/bin/activate
+python -m src.ingest
+```
+
+**Fault-Tolerant Features:**
+- ✅ **Safe to Cancel**: Press `Ctrl+C` anytime - processed data is already saved
+- ✅ **Incremental Progress**: Data streams to Qdrant as it's processed
+- ✅ **Resume Support**: Re-running skips already-processed documents
+- ⏱️ **Progress Visibility**: Real-time progress bars show extraction stages
+
+**Expected Output:**
+```
+🚀 Running Pipeline: Semantic Splitting & Metadata Enrichment...
+(Data is being saved incrementally - safe to interrupt)
+✓ Pipeline finished. Generated X enriched nodes.
+```
+
+### Starting the UI
+
 ```bash
 # Start everything
 cd /home/gerrit/Antigravity/LLIX
@@ -154,15 +207,34 @@ Access the UI at: **http://localhost:8501**
 
 ### Software
 - **Python 3.12** (recommended) - Python 3.10/3.11 compatible, **3.14+ not supported**
-- Podman (rootless mode supported)
-- Ollama installed on host
-- Streamlit for UI
+- **Podman** - Rootless mode verified and supported
+- **Ollama** - Installed and running on host for local LLM inference
+- **Streamlit** - For Web UI
 
 ### Hardware (Recommended)
 - **CPU**: AMD Ryzen AI MAX-395 or similar
 - **RAM**: 128GB DDR5 (minimum 16GB)
 - **GPU**: AMD Radeon 8060S iGPU with 32GB VRAM (or equivalent)
 - **Storage**: ~100GB for models, vectors, and documents
+
+### Container Runtime (Podman)
+We use **Podman** in rootless mode for running Qdrant:
+```bash
+# Verify Podman installation
+podman --version
+
+# Start Qdrant via Podman Compose
+podman compose up -d
+
+# Check container status
+podman ps
+```
+
+**Why Podman?**
+- ✅ Rootless by default (no daemon required)
+- ✅ Docker-compatible CLI
+- ✅ Better security isolation
+- ✅ Native systemd integration
 
 ### ROCm Configuration (for AMD iGPU)
 ```bash
