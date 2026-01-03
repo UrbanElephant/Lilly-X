@@ -93,6 +93,10 @@ pip install -r requirements.txt
 ```bash
 podman compose down
 podman compose up -d
+
+# If "container name already in use" error occurs:
+podman rm -f qdrant
+podman compose up -d
 ```
 
 ### Ollama Model Not Available
