@@ -6,7 +6,8 @@ echo "========================"
 echo ""
 
 # Navigate to LLIX directory
-cd /home/gerrit/Antigravity/LLIX
+# Navigate to script directory
+cd "$(dirname "$0")"
 
 # Check if Qdrant is already running
 if curl -s http://localhost:6333/healthz > /dev/null 2>&1; then
