@@ -81,8 +81,9 @@ for message in st.session_state.messages:
         # If it was an assistant message and had sources, show them
         if message["role"] == "assistant" and "sources" in message:
             with st.expander("📚 View Sources"):
+                st.caption(f"Showing Top 5 results from Re-Ranker (Cross-Encoder)")
                 for src in message["sources"]:
-                    st.markdown(f"**{src['source']}** (Score: {src['score']:.2f})")
+                    st.markdown(f"**{src['source']}** (Re-Rank Confidence: {src['score']:.2f}) 🎯")
                     st.caption(src['content'])
                     # Display metadata if present
                     meta_text = format_metadata(src.get('metadata', {}))
@@ -119,6 +120,7 @@ if prompt := st.chat_input("What would you like to know?"):
                 source_data = []
                 if result.source_nodes:
                     with st.expander("📚 View Sources"):
+                        st.caption(f"Showing Top 5 results from Re-Ranker (Cross-Encoder)")
                         for node in result.source_nodes:
                             meta = node.node.metadata
                             meta_output = format_metadata(meta)
@@ -130,7 +132,7 @@ if prompt := st.chat_input("What would you like to know?"):
                                 "metadata": meta  # Store metadata in history
                             }
                             source_data.append(src_info)
-                            st.markdown(f"**{src_info['source']}** (Score: {src_info['score']:.2f})")
+                            st.markdown(f"**{src_info['source']}** (Re-Rank Confidence: {src_info['score']:.2f}) 🎯")
                             st.caption(src_info['content'])
                             # Display metadata
                             if meta_output:

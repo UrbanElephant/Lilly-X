@@ -4,10 +4,12 @@ print("Starting ingestion script (initializing imports)...", flush=True)
 
 import json
 import logging
+import hashlib
+import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, field_validator
 
 from llama_index.core import (
     SimpleDirectoryReader,
@@ -51,14 +53,84 @@ class DocumentMetadata(BaseModel):
         default="Unknown",
         description="Type of document (e.g., Technical Manual, Fiction, Email, Research Paper)"
     )
-    authors: str = PydanticField(
+    authors: Union[str, List[str]] = PydanticField(
         default="Unknown",
         description="Name of the primary author(s) or organization"
     )
-    key_dates: str = PydanticField(
+    key_dates: Union[str, List[str]] = PydanticField(
         default="Unknown",
         description="Publication date or primary event date mentioned in the text"
     )
+
+    @field_validator('authors', 'key_dates', mode='before')
+    @classmethod
+    def flatten_list(cls, v: Union[str, List[str]]) -> str:
+        """Allow LLM to return a list, but flatten it to a string for storage."""
+        if isinstance(v, list):
+            return ", ".join([str(item) for item in v])
+        return v
+
+
+class IngestionState:
+    """
+    Manages ingestion state to track which files have been processed.
+    Uses MD5 hashes to detect file changes and enable incremental indexing.
+    """
+    
+    def __init__(self, state_file: Path = Path("./ingestion_state.json")):
+        self.state_file = state_file
+        self.state: dict[str, str] = {}  # {filename: md5_hash}
+        
+    def load_state(self) -> None:
+        """Load existing state from JSON file."""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    self.state = json.load(f)
+                logger.info(f"✓ Loaded ingestion state: {len(self.state)} files tracked")
+            except Exception as e:
+                logger.warning(f"Failed to load state file: {e}. Starting fresh.")
+                self.state = {}
+        else:
+            logger.info("No previous state found. Will process all files.")
+            self.state = {}
+    
+    def save_state(self) -> None:
+        """Save current state to JSON file."""
+        try:
+            with open(self.state_file, 'w') as f:
+                json.dump(self.state, f, indent=2)
+            logger.info(f"✓ Saved ingestion state: {len(self.state)} files tracked")
+        except Exception as e:
+            logger.error(f"Failed to save state file: {e}")
+    
+    @staticmethod
+    def compute_hash(file_path: Path) -> str:
+        """Compute MD5 hash of a file."""
+        md5_hash = hashlib.md5()
+        try:
+            with open(file_path, "rb") as f:
+                # Read file in chunks to handle large files
+                for chunk in iter(lambda: f.read(4096), b""):
+                    md5_hash.update(chunk)
+            return md5_hash.hexdigest()
+        except Exception as e:
+            logger.error(f"Failed to compute hash for {file_path}: {e}")
+            return ""
+    
+    def has_changed(self, file_path: Path) -> bool:
+        """Check if a file has changed since last ingestion."""
+        current_hash = self.compute_hash(file_path)
+        filename = str(file_path)
+        
+        # File is new or changed if hash differs
+        return self.state.get(filename) != current_hash
+    
+    def update_file(self, file_path: Path) -> None:
+        """Update hash for a processed file."""
+        current_hash = self.compute_hash(file_path)
+        filename = str(file_path)
+        self.state[filename] = current_hash
 
 
 # =====================================================
@@ -314,22 +386,74 @@ def ingest_documents(
     # Create collection if needed
     create_collection_if_not_exists(client, settings.qdrant_collection)
     
-    # Load documents
-    logger.info(f"Loading documents from {docs_dir}...")
-    documents = SimpleDirectoryReader(
-        input_dir=str(docs_dir),
-        required_exts=file_extensions,
-        recursive=True,
-    ).load_data()
+    # === INCREMENTAL INDEXING LOGIC ===
+    logger.info("Checking for new or modified files...")
     
-    logger.info(f"✓ Loaded {len(documents)} document(s)")
+    # Initialize ingestion state
+    ingestion_state = IngestionState()
+    ingestion_state.load_state()
+    
+    # Scan docs directory for all files with specified extensions
+    all_files = []
+    for ext in file_extensions:
+        all_files.extend(docs_dir.glob(f"**/*{ext}"))
+    
+    logger.info(f"Found {len(all_files)} total file(s) in {docs_dir}")
+    
+    # Identify new or modified files
+    files_to_process = []
+    skipped_files = []
+    
+    for file_path in all_files:
+        if ingestion_state.has_changed(file_path):
+            files_to_process.append(file_path)
+        else:
+            skipped_files.append(file_path)
+    
+    # Log statistics
+    logger.info(f"Files to process: {len(files_to_process)} (new or modified)")
+    logger.info(f"Files skipped: {len(skipped_files)} (unchanged)")
+    logger.info("")
+    
+    # Early return if no files to process
+    if len(files_to_process) == 0:
+        logger.info("=" * 70)
+        logger.info("✅ No new or modified files to ingest")
+        logger.info("=" * 70)
+        logger.info("All files are up to date. Skipping ingestion.")
+        logger.info("")
+        
+        # Return existing index
+        vector_store = QdrantVectorStore(
+            client=client,
+            collection_name=settings.qdrant_collection,
+        )
+        return VectorStoreIndex.from_vector_store(vector_store=vector_store)
+    
+    # Display files to be processed
+    logger.info("Files to process:")
+    for i, file_path in enumerate(files_to_process, 1):
+        logger.info(f"  {i}. {file_path.name}")
+    
+    if skipped_files:
+        logger.info("\nFiles skipped (unchanged):")
+        for file_path in skipped_files[:5]:  # Show only first 5
+            logger.info(f"  - {file_path.name}")
+        if len(skipped_files) > 5:
+            logger.info(f"  ... and {len(skipped_files) - 5} more")
+    logger.info("")
+    
+    # Load only the files that need processing
+    logger.info(f"Loading {len(files_to_process)} document(s)...")
+    documents = SimpleDirectoryReader(
+        input_files=[str(f) for f in files_to_process],
+    ).load_data()
     
     if len(documents) == 0:
         logger.warning(f"No documents found in {docs_dir}")
         logger.info("Please add documents to the directory and try again.")
         return None
     
-    # Display document info
     for i, doc in enumerate(documents, 1):
         logger.info(f"  {i}. {Path(doc.metadata.get('file_name', 'unknown')).name}")
     logger.info("")
@@ -362,11 +486,19 @@ def ingest_documents(
     logger.info("Creating index from persisted vector store...")
     index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
     
+    # === UPDATE INGESTION STATE ===
+    # Update hashes for all successfully processed files
+    logger.info("Updating ingestion state...")
+    for file_path in files_to_process:
+        ingestion_state.update_file(file_path)
+    ingestion_state.save_state()
+    
     logger.info("")
     logger.info("=" * 70)
     logger.info("✅ Ingestion Complete!")
     logger.info("=" * 70)
     logger.info(f"Documents processed: {len(documents)}")
+    logger.info(f"Documents skipped: {len(skipped_files)} (unchanged)")
     logger.info(f"Collection: {settings.qdrant_collection}")
     logger.info(f"Vector store: {settings.qdrant_url}")
     logger.info("")

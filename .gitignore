@@ -23,26 +23,36 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Environment - CRITICAL: Sensitive data!
+# Environment Variables - CRITICAL: Contains sensitive data!
 .env
+.env.local
+.env.production
 
 # IDEs
 .vscode/
 .idea/
 *.swp
+.swn
 *.swo
 *~
+.project
+.pydevproject
 
-# Data and Models
+# Data and Models (large files, not for version control)
 data/
 models/
+*.bin
+*.safetensors
 
 # Logs
 *.log
 logs/
+streamlit_launch.log
 
-# Temporary text outputs (BUT keep requirements.txt!)
+# Temporary text outputs (keep requirements.txt and important docs)
 *.txt
 !requirements.txt
 
@@ -53,7 +63,39 @@ tail*.md
 python_*.md
 list.md
 ingest_*.md
+commit_output*.md
+git_*.md
+
+# Ingestion State (specific to local environment)
+ingestion_state.json
 
 # OS
 .DS_Store
 Thumbs.db
+*.bak
+*.swp
+
+# Podman/Container
+*.pid
+*.sock
+
+# Test outputs
+test_*.py
+*_test_output.txt
+
+# Qdrant data (managed via volumes, not repository)
+qdrant_data/
+qdrant_storage/
+
+# Jupyter/IPython
+.ipynb_checkpoints
+*.ipynb
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/

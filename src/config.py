@@ -65,6 +65,20 @@ class Settings(BaseSettings):
         description="Number of top results to retrieve from vector store",
     )
 
+    # Two-Stage Retrieval Configuration
+    reranker_model: str = Field(
+        default="BAAI/bge-reranker-v2-m3",
+        description="HuggingFace re-ranker model identifier for two-stage retrieval",
+    )
+    top_k_retrieval: int = Field(
+        default=25,
+        description="Number of results to retrieve in first stage (broad net)",
+    )
+    top_k_final: int = Field(
+        default=5,
+        description="Number of top results after re-ranking to send to LLM",
+    )
+
     def __init__(self, **kwargs) -> None:
         """Initialize settings and ensure docs_dir exists."""
         super().__init__(**kwargs)

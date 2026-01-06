@@ -15,6 +15,7 @@ try:
     from llama_index.llms.ollama import Ollama
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.core.schema import NodeWithScore
+    from llama_index.postprocessor.huggingface_rerank import HuggingFaceRerank
     from qdrant_client import QdrantClient
 except ImportError:
     # Allow import for type checking/linting even if missing
@@ -63,7 +64,12 @@ class RAGEngine:
                 base_url=settings.ollama_base_url, 
                 request_timeout=360.0,
                 context_window=8192,
-                system_prompt="You are a helpful AI assistant. Answer the user's question concisely using the provided context. If the answer is not in the context, say so.",
+                system_prompt="""You are Lilly-X, a precision-focused RAG assistant for engineering teams.
+STRICT RULES:
+1. Answer ONLY based on the provided context.
+2. If the answer is not in the context, state 'I cannot find this information in the knowledge base.'
+3. Be concise and technical.
+4. Always cite the source filename when referencing specific data.""",
                 additional_kwargs={"num_ctx": 8192}
             )
         except Exception as e:
@@ -86,7 +92,18 @@ class RAGEngine:
         Settings.embed_model = embed_model
         Settings.chunk_size = settings.chunk_size
 
-        # 4. Connect to Vector Store
+        # 4. Initialize Reranker for Two-Stage Retrieval
+        try:
+            logger.info(f"Loading Reranker: {settings.reranker_model}")
+            reranker = HuggingFaceRerank(
+                model=settings.reranker_model,
+                top_n=settings.top_k_final  # Final top 5 results after reranking
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load reranker: {e}. Falling back to single-stage retrieval.")
+            reranker = None
+
+        # 5. Connect to Vector Store
         try:
             client = get_qdrant_client()
             vector_store = QdrantVectorStore(
@@ -100,9 +117,21 @@ class RAGEngine:
                 storage_context=storage_context,
             )
             
-            self._query_engine = self._index.as_query_engine(
-                similarity_top_k=settings.top_k
-            )
+            # Configure query engine with two-stage retrieval
+            # Stage 1: Fetch 25 candidates (broad net)
+            # Stage 2: Rerank to top 5 (high precision)
+            if reranker:
+                logger.info(f"Two-Stage Retrieval enabled: Fetch {settings.top_k_retrieval} → Rerank to {settings.top_k_final}")
+                self._query_engine = self._index.as_query_engine(
+                    similarity_top_k=settings.top_k_retrieval,  # Fetch 25 candidates
+                    node_postprocessors=[reranker]  # Rerank to top 5
+                )
+            else:
+                logger.info(f"Single-stage retrieval: top_k={settings.top_k}")
+                self._query_engine = self._index.as_query_engine(
+                    similarity_top_k=settings.top_k
+                )
+            
             logger.info("RAG Engine initialized successfully.")
             
         except Exception as e:
