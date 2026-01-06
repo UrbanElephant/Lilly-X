@@ -1,201 +1,214 @@
-# Lilly-X | Local Precision RAG System
+# LLIX - Local Hybrid GraphRAG
 
-[![Version](https://img.shields.io/badge/version-2.5-blue.svg)](https://github.com/yourusername/lilly-x)
 [![Python](https://img.shields.io/badge/python-3.12-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
-> **Production-Grade RAG with Two-Stage Retrieval & Incremental Indexing**
+> **Production-Grade Hybrid GraphRAG: Vector Embeddings + Knowledge Graph**
 
-Lilly-X is a precision-focused local RAG system designed for engineering teams who need reliable, source-cited answers from their technical documentation. Built on battle-tested open-source components with enterprise-grade features.
-
----
-
-## ✨ What Makes Lilly-X Different
-
-### 🎯 Two-Stage Retrieval (Fetch & Rerank)
-- **Stage 1**: Cast a wide net—retrieve 25 candidates using vector similarity
-- **Stage 2**: Apply cross-encoder reranking (BAAI/bge-reranker-v2-m3) for semantic precision
-- **Result**: LLM receives only the top 5 most relevant chunks
-
-**Why This Works**:
-- ✅ **Recall**: Broad initial search ensures no relevant content is missed
-- ✅ **Precision**: Reranker uses deeper semantic understanding than vector similarity alone
-- ✅ **Efficiency**: LLM processes fewer, higher-quality chunks
-
-### ⚡ Incremental Indexing
-- **MD5 hash tracking** of every document
-- **Skip unchanged files** automatically
-- **Resume-safe**: Failed ingestion? Just restart—only new/modified files are processed
-- **Performance**: 10x faster re-ingestion when testing with existing docs
-
-### 🧠 "Golden Source" Metadata Enrichment
-Every chunk is enriched with:
-- **Structured Metadata**: Document type, authors, key dates (LLM-extracted)
-- **Contextual Summaries**: Summaries of prev/next chunks to prevent "lost context"
-- **Synthetic Q&A**: Questions this chunk can answer (improves retrieval matching)
-- **Entity Extraction**: People, organizations, technologies
-
-### 🤖 Professional AI Persona
-Lilly-X identifies itself and follows strict rules:
-1. Answer ONLY from provided context
-2. Cite source filenames explicitly
-3. Admit when information isn't available
-4. Be concise and technical
+LLIX (Lilly-X) is a fully operational local RAG system combining semantic vector search (Qdrant) with knowledge graph traversal (Neo4j). Built for engineering teams requiring intelligent, context-aware document retrieval with entity relationship preservation.
 
 ---
 
-## 🏗️ Architecture
+## 🎯 Key Achievements
 
-```mermaid
-flowchart LR
-    User[👤 User Query] --> Retrieval[📊 Two-Stage Retrieval]
-    
-    subgraph Stage1 [Stage 1: Broad Retrieval]
-        Retrieval --> Vector[Vector Search<br/>Top 25 Candidates]
-    end
-    
-    subgraph Stage2 [Stage 2: Reranking]
-        Vector --> Rerank[🎯 Cross-Encoder<br/>bge-reranker-v2-m3]
-        Rerank --> Top5[Top 5 Results]
-    end
-    
-    Top5 --> LLM[🧠 Mistral-Nemo 12B<br/>with Lilly-X Persona]
-    LLM --> Response[✅ Source-Cited Answer]
-    
-    style Rerank fill:#f9f,stroke:#333,stroke-width:2px
-    style Top5 fill:#bfb,stroke:#333,stroke-width:2px
+- ✅ **Environment**: Python 3.12 in clean `venv`
+- ✅ **Infrastructure**: Docker/Podman Compose (Neo4j Graph + Qdrant Vectors)
+- ✅ **Ingestion Pipeline**: Custom `GraphExtractor` with structured entity/relationship extraction
+- ✅ **Graph Integration**: Fully tested - Neo4j populated via Cypher `MERGE` statements
+- ✅ **Vector Storage**: Qdrant embeddings successfully created and queryable
+- ✅ **Status**: **Hybrid ingestion pipeline operational and validated**
+
+---
+
+## 🏗️ Architecture Overview
+
+```
+┌──────────────┐
+│   PDF Docs   │
+└──────┬───────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│   Ingestion Engine (src/ingest.py)  │
+│   ┌─────────────────────────────┐   │
+│   │  Text Splitter (1024 chunks)│   │
+│   └─────────────┬───────────────┘   │
+│                 │                   │
+│        ┌────────┴────────┐          │
+│        │                 │          │
+│        ▼                 ▼          │
+│   ┌─────────┐    ┌──────────────┐  │
+│   │ Embedder│    │GraphExtractor│  │
+│   └────┬────┘    └──────┬───────┘  │
+└────────┼────────────────┼──────────┘
+         │                │
+         │                │
+    ┌────▼─────┐    ┌────▼─────┐
+    │  Qdrant  │    │  Neo4j   │
+    │ (Vectors)│    │ (Graph)  │
+    └────┬─────┘    └────┬─────┘
+         │                │
+         └────────┬───────┘
+                  ▼
+           ┌──────────────┐
+           │  RAG Engine  │
+           │ (Hybrid Query)│
+           └──────┬───────┘
+                  │
+                  ▼
+           ┌──────────────┐
+           │ Streamlit UI │
+           └──────────────┘
 ```
 
-### Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Vector Store** | Qdrant | Fast similarity search with HNSW indexing |
-| **LLM** | Ollama (Mistral-Nemo 12B) | Local inference with 8192 token context |
-| **Embeddings** | BAAI/bge-m3 | 1024-dim multilingual embeddings |
-| **Reranker** | BAAI/bge-reranker-v2-m3 | Cross-encoder for semantic reranking |
-| **Framework** | LlamaIndex | RAG orchestration & metadata extraction |
-| **UI** | Streamlit | ChatGPT-like web interface |
-| **Container** | Podman | Rootless Qdrant deployment |
-
-**Hardware Optimization**: Optimized for AMD Ryzen AI MAX-395 with 32GB iGPU VRAM and ROCm acceleration.
+**Flow:**
+1. **Documents** → Ingestion splits into semantic chunks
+2. **Parallel Processing:**
+   - **Qdrant Path**: Text → Embeddings (BAAI/bge-m3) → Vector Store
+   - **Neo4j Path**: Text → `GraphExtractor` (via Ollama/Mistral-Nemo) → Entities/Relationships → Graph Store
+3. **Storage:** Both stores written idempotently (hash-based deduplication)
+4. **Retrieval:** RAG Engine queries both stores in parallel, fuses context
+5. **UI:** Streamlit interface displays answers + source citations
 
 ---
 
-## 🚀 Quick Start
+## 📋 Prerequisites
 
-### Prerequisites
+| Requirement | Version | Notes |
+|------------|---------|-------|
+| **Python** | 3.12 | 3.10/3.11 compatible, **not 3.14+** |
+| **Docker/Podman** | Latest | With Compose plugin |
+| **Ollama** | Latest | Running on host (port 11434) |
+| **RAM** | 16GB minimum | 128GB recommended |
+| **Disk Space** | 10GB+ | For Neo4j + Qdrant volumes |
 
-- **Python 3.12** (3.10/3.11 compatible, **3.14+ not supported**)
-- **Podman** (rootless container runtime)
-- **Ollama** (running natively on host)
-- **128GB RAM** recommended (16GB minimum)
+**Hardware Optimization**: Tuned for AMD Ryzen AI MAX-395 with ROCm acceleration.
 
-### Installation
+---
 
-```bash
-# 1. Clone repository
-cd /path/to/your/workspace
-git clone <repo-url> LLIX
-cd LLIX
+## 🚀 Quick Start Guide
 
-# 2. Create virtual environment
-python3.12 -m venv venv
-source venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Create environment file
-cp .env.template .env
-# Edit .env to customize settings
-
-# 5. Verify Ollama is running
-curl http://localhost:11434/api/tags
-
-# Pull models if needed
-ollama pull mistral-nemo:12b
-```
-
-### Start the System
+### 1. Start Database Infrastructure
 
 ```bash
-# All-in-one startup (Qdrant + Streamlit)
 bash start_all.sh
 ```
 
-The script will:
-1. ✅ Check if Qdrant is healthy (or start/create container)
-2. ⏳ Wait for Qdrant to become ready (with retry logic)
-3. 🌐 Launch Streamlit UI
+**What it does:**
+- ✅ Checks/starts Qdrant container (health check + retry logic)
+- ✅ Checks/starts Neo4j container (waits up to 60s for plugin downloads)
+- 🌐 Launches Streamlit UI at `http://localhost:8501`
 
-Access at: **http://localhost:8501**
+**Access Points:**
+- **UI**: http://localhost:8501
+- **Neo4j Browser**: http://localhost:7474 (user: `neo4j`, password: `password`)
+- **Qdrant API**: http://localhost:6333
 
-### Ingest Your Documents
+### 2. Activate Python Environment
 
 ```bash
-# 1. Add documents to data/docs/
+source venv/bin/activate
+```
+
+### 3. Run Ingestion Pipeline
+
+```bash
+# Add your documents (PDFs, MD, TXT) to data/docs/
 cp /path/to/your/docs/*.pdf data/docs/
 
-# 2. Run ingestion (with incremental indexing)
+# Execute hybrid ingestion
 bash run_ingestion.sh
 ```
 
-**Incremental Indexing in Action**:
-- **First run**: Processes all files, creates `ingestion_state.json`
-- **Subsequent runs**: Only processes new/modified files
-- **Safe to interrupt**: Data persists incrementally to Qdrant
+**Ingestion Process:**
+- 📄 Processes all files in `data/docs/`
+- 🔢 Creates MD5 hashes for incremental indexing (re-runs skip unchanged files)
+- 🧠 **GraphExtractor** uses Pydantic models (`KnowledgeGraphUpdate`) for structured extraction
+- 📊 Writes to **Qdrant** (vectors) and **Neo4j** (graph) in parallel
+- 🔊 "Loud Logging" enabled for debugging (all operations print to stdout)
+
+**First run**: Processes all files (~15 sec per file)  
+**Subsequent runs**: Only processes new/modified files
+
+### 4. Launch UI
+
+```bash
+streamlit run src/app.py
+```
+
+Open browser to `http://localhost:8501` and start querying your documents!
+
+---
+
+## 🛠️ Technology Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **Vector Store** | Qdrant | HNSW similarity search (1024-dim embeddings) |
+| **Graph Database** | Neo4j 5.15 | Knowledge graph with APOC/GDS plugins |
+| **LLM** | Ollama (Mistral-Nemo 12B) | Entity extraction + answer generation |
+| **Embeddings** | BAAI/bge-m3 | Multilingual embeddings via HuggingFace |
+| **Framework** | LlamaIndex | RAG orchestration |
+| **UI** | Streamlit | ChatGPT-like interface |
+| **Orchestration** | Docker Compose | Dual-store deployment |
+
+---
+
+## 🧩 Key Components
+
+### GraphExtractor (`src/ingest.py`)
+
+**Custom Implementation Highlights:**
+- Uses `PromptTemplate` to instruct Ollama for structured extraction
+- Pydantic models enforce strict schemas:
+  ```python
+  class KnowledgeGraphUpdate(BaseModel):
+      entities: List[Entity]
+      relationships: List[Relationship]
+  ```
+- Direct Neo4j writes using `MERGE` statements (idempotent)
+- Error handling with graceful fallbacks (logs failures, continues ingestion)
+
+**Extraction Flow:**
+```
+Text Chunk → LLM Prompt → JSON Response → Pydantic Validation → Cypher MERGE → Neo4j
+```
+
+### Hybrid RAG Engine (`src/rag_engine.py`)
+
+**Dual-Retrieval Strategy:**
+1. **Vector Search**: Top-K semantic similarity from Qdrant
+2. **Graph Traversal**: Entity-based Cypher queries in Neo4j
+3. **Context Fusion**: Combines results before LLM generation
+4. **Graceful Fallback**: Continues in vector-only mode if Neo4j unavailable
 
 ---
 
 ## 📊 Configuration
 
-All settings via `.env` or environment variables (leverages `pydantic-settings`):
+Key settings (`.env`):
 
-### Core Settings
+```bash
+# Vector Store
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=tech_books
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant REST API endpoint |
-| `QDRANT_COLLECTION` | `tech_books` | Collection name |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `LLM_MODEL` | `mistral-nemo:12b` | LLM for generation |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model (1024-dim) |
+# Graph Database
+NEO4J_URL=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
 
-### Two-Stage Retrieval
+# LLM & Embeddings
+OLLAMA_BASE_URL=http://localhost:11434
+LLM_MODEL=mistral-nemo:12b
+EMBEDDING_MODEL=BAAI/bge-m3
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |
-| `TOP_K_RETRIEVAL` | `25` | Candidates fetched in Stage 1 |
-| `TOP_K_FINAL` | `5` | Results after Stage 2 reranking |
-
-### Performance Tuning
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHUNK_SIZE` | `1024` | Semantic chunk size |
-| `CHUNK_OVERLAP` | `200` | Overlap between chunks |
-| `BATCH_SIZE` | `16` | Embedding batch size |
-
----
-
-## 🛠️ Engineering Principles
-
-### No Magic, Just Engineering
-- **Type Safety**: Pydantic models for all configs and metadata
-- **Explicit State**: Ingestion state persisted to JSON, not hidden caches
-- **Observability**: Detailed logging at every stage (health checks, retries, processing)
-
-### Idempotent Operations
-- **Startup Script**: Handles existing containers gracefully, force IPv4
-- **Ingestion**: Hash-based change detection prevents duplicate work
-- **Error Recovery**: Soft fail logic (proceeds if container running despite health check failures)
-
-### Human Architect, AI Sous-Chef
-- **Structured Prompts**: Metadata extraction uses Pydantic models for validation
-- **Graceful Degradation**: If reranker fails to load, falls back to single-stage retrieval
-- **Flexible Types**: `Union[str, List[str]]` with validators handle LLM output variability
+# Retrieval
+TOP_K=3
+CHUNK_SIZE=1024
+CHUNK_OVERLAP=200
+BATCH_SIZE=16
+```
 
 ---
 
@@ -204,170 +217,135 @@ All settings via `.env` or environment variables (leverages `pydantic-settings`)
 ```
 LLIX/
 ├── src/
-│   ├── config.py           # Centralized settings (pydantic-settings)
+│   ├── config.py           # Centralized Pydantic settings
 │   ├── database.py         # Qdrant client singleton
-│   ├── rag_engine.py       # Two-stage retrieval logic
-│   ├── ingest.py           # Golden Source pipeline + incremental indexing
+│   ├── graph_database.py   # Neo4j driver + connection logic
+│   ├── graph_schema.py     # Pydantic models (Entity, Relationship)
+│   ├── ingest.py           # ✅ GraphExtractor + Hybrid Pipeline
+│   ├── rag_engine.py       # Dual-store retrieval + LLM generation
+│   ├── query.py            # CLI query interface
 │   └── app.py              # Streamlit UI
 ├── data/
-│   └── docs/               # Your documents (PDF, MD, TXT)
-├── start_all.sh            # Robust startup script (Qdrant + UI)
-├── start.sh                # Streamlit launcher
-├── run_ingestion.sh        # Ingestion wrapper
-├── requirements.txt        # Python dependencies
+│   └── docs/               # Your documents (auto-processed)
+├── compose.yaml            # Qdrant + Neo4j services
+├── start_all.sh            # Robust startup script (health checks)
+├── run_ingestion.sh        # Ingestion wrapper (activates venv)
+├── requirements.txt        # Python 3.12 dependencies
 ├── .env.template           # Environment template
-└── ingestion_state.json    # Hash tracking for incremental indexing
+├── .gitignore              # Excludes venv/, neo4j_data/, qdrant_storage/
+└── README.md               # This file
 ```
 
 ---
 
-## 🎯 Usage Examples
+## 🔍 Current Status
 
-### Query the System
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Ingestion Pipeline** | ✅ COMPLETED | GraphExtractor operational with loud logging |
+| **Graph Integration** | ✅ TESTED | Neo4j successfully populated via Cypher |
+| **Vector Storage** | ✅ OPERATIONAL | Qdrant embeddings created and queryable |
+| **Hybrid Retrieval** | ✅ FUNCTIONAL | Parallel query to both stores working |
+| **Streamlit UI** | ✅ DEPLOYED | ChatGPT-like interface with source citations |
+| **Python 3.12 Migration** | ✅ COMPLETE | Clean venv with verified dependencies |
 
+---
+
+## 🎓 Engineering Principles
+
+### Loud Logging
+Every critical operation prints to stdout:
 ```python
-from src.rag_engine import RAGEngine
-
-engine = RAGEngine()
-result = engine.query("How do I configure the reranker?")
-
-print(result.response)
-# "According to config.py, you can set RERANKER_MODEL..."
-
-# View sources
-for node in result.source_nodes:
-    print(f"Source: {node.node.metadata['file_name']}")
-    print(f"Confidence: {node.score:.2f}")
+print("🔗 Connecting to Neo4j...", flush=True)
+print(f"✅ Writing {len(entities)} entities to graph", flush=True)
 ```
 
-### Streamlit UI Features
+### Idempotent Operations
+- **Cypher `MERGE`**: Entities/relationships created only if they don't exist
+- **Hash Tracking**: `ingestion_state.json` prevents duplicate processing
+- **Startup Script**: Handles existing containers gracefully (safe to re-run)
 
-- **ChatGPT-like Interface**: Conversational Q&A
-- **Source Citations**: Expandable source viewer with:
-  - Re-Rank Confidence scores (0-1)
-  - Document metadata (type, author, dates)
-  - Synthetic Q&A and entity tags
-- **"Showing Top 5 results from Re-Ranker (Cross-Encoder)"** badge for transparency
+### Type Safety
+- Pydantic models for all configs and structured data
+- Explicit validation with `@field_validator`
+- No runtime "surprises" from schema mismatches
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Qdrant Won't Start
+### Neo4j Not Populating
+
+```bash
+# Verify Neo4j connectivity
+python -m src.graph_database
+
+# Check ingestion logs for extraction errors
+tail -f ingest.log
+```
+
+### Qdrant Connection Refused
 
 ```bash
 # Check container status
-podman ps -a | grep qdrant
+podman ps | grep qdrant
 
-# View logs
-podman logs qdrant
-
-# Force recreation
-podman rm -f qdrant
+# Restart with health check
 bash start_all.sh
 ```
 
-### Health Check Fails but Container Running
+### Ingestion Stalls
 
-The startup script handles this automatically (soft fail logic). If you see:
-```
-⚠️ Health check failed but container is running. Proceeding...
-```
-
-This is expected behavior (IPv4/IPv6 binding quirk). The system will proceed safely.
-
-### Ingestion Errors (Pydantic Validation)
-
-If you see `pydantic_core.ValidationError` during metadata extraction:
-- The system automatically handles this with the `@field_validator` in `DocumentMetadata`
-- Lists from LLM are auto-converted to comma-separated strings
-- Failures gracefully default to "Unknown"
-
-### Python 3.14+ Issues
-
-**Do not use Python 3.14+**. Known issues include:
-- LlamaIndex import errors
-- Streamlit incompatibilities
-- asyncio weak reference errors
-
+**Cause**: Ollama model not loaded  
 **Solution**:
 ```bash
-rm -rf venv
-python3.12 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# Pre-pull model
+ollama pull mistral-nemo:12b
+
+# Verify API
+curl http://localhost:11434/api/tags
 ```
 
 ---
 
-## 📈 Performance
+## 📚 Related Documentation
 
-### Latency Benchmarks (AMD Ryzen AI MAX-395)
-
-| Metric | Value |
-|--------|-------|
-| **First Token (Cold)** | ~2-3s |
-| **Full Response (avg)** | ~8-10s |
-| **Retrieval Time** | ~500ms (Stage 1) + ~200ms (Stage 2) |
-| **Embedding Time** | ~50ms/chunk (batch of 16) |
-
-### Incremental Indexing Gains
-
-| Scenario | Files Processed | Time |
-|----------|----------------|------|
-| **Initial Ingestion** | 100 files | ~25 min |
-| **Re-run (no changes)** | 0 files | ~5 sec |
-| **1 file modified** | 1 file | ~15 sec |
-
----
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and "Inner Loop" protocols.
-
-**Key Principles**:
-- TDD: Write tests for new extractors/validators
-- Type annotations required for all functions
-- Pydantic models for structured data (no dicts)
-- Idempotent operations (scripts should be re-runnable)
-
----
-
-## 📚 Documentation
-
-- **[INGESTION.md](INGESTION.md)**: Detailed ingestion pipeline documentation
-- **[VERIFICATION.md](VERIFICATION.md)**: System health checks
-- **[QUICKSTART.md](QUICKSTART.md)**: Step-by-step setup guide
+- **[INGESTION.md](INGESTION.md)**: Deep dive into pipeline architecture
+- **[QUICKSTART.md](QUICKSTART.md)**: Step-by-step setup walkthrough
+- **[VERIFICATION.md](VERIFICATION.md)**: Health check scripts
 
 ---
 
 ## 🗺️ Roadmap
 
-### v2.6 (Planned)
-- [ ] Conversation memory (multi-turn context)
-- [ ] Query history with re-run capability
-- [ ] Embedding model hot-swap support
+### v3.0 (Current) ✅
+- [x] Hybrid GraphRAG architecture
+- [x] Custom GraphExtractor with Pydantic validation
+- [x] Neo4j Cypher integration (idempotent writes)
+- [x] Python 3.12 migration
+- [x] Incremental indexing (hash-based)
 
-### v3.0 (Vision)
-- [ ] GraphRAG with Neo4j knowledge graphs
-- [ ] LangGraph agentic supervisor pattern
-- [ ] Multi-strategy retrieval (HyDE, Parent Document)
+### v3.1 (Next)
+- [ ] Multi-turn conversation memory
+- [ ] Graph-based query expansion
+- [ ] Entity disambiguation
+- [ ] Reranker integration (FlashRank)
 
 ---
 
 ## 📄 License
 
-Proprietary - Lilly-X Project
+Proprietary - LLIX Project
 
 ---
 
 ## 🙏 Acknowledgments
 
 Built with:
-- [LlamaIndex](https://www.llamaindex.ai/) - RAG orchestration
+- [LlamaIndex](https://www.llamaindex.ai/) - RAG framework
 - [Qdrant](https://qdrant.tech/) - Vector database
-- [Ollama](https://ollama.ai/) - Local LLM inference
+- [Neo4j](https://neo4j.com/) - Graph database
+- [Ollama](https://ollama.ai/) - Local LLM
 - [Streamlit](https://streamlit.io/) - Web UI
-- [HuggingFace](https://huggingface.co/) - Embeddings & Reranker models
 
-Hardware optimization inspired by AMD ROCm community best practices.
+Optimized for AMD ROCm workloads.

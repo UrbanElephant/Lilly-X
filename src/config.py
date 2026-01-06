@@ -27,6 +27,20 @@ class Settings(BaseSettings):
         description="Qdrant collection name for storing embeddings",
     )
 
+    # Neo4j Configuration
+    neo4j_url: str = Field(
+        default="bolt://localhost:7687",
+        description="Neo4j graph database URL (Bolt protocol)",
+    )
+    neo4j_user: str = Field(
+        default="neo4j",
+        description="Neo4j database username",
+    )
+    neo4j_password: str = Field(
+        default="",
+        description="Neo4j database password",
+    )
+
     # Ollama Configuration (running natively on host)
     ollama_base_url: str = Field(
         default="http://localhost:11434",

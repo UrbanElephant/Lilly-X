@@ -87,6 +87,10 @@ test_*.py
 qdrant_data/
 qdrant_storage/
 
+# Neo4j data (managed via volumes, not repository)
+neo4j_data/
+neo4j_plugins/
+
 # Jupyter/IPython
 .ipynb_checkpoints
 *.ipynb
@@ -99,3 +103,9 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+neo4j_data/
+qdrant_storage/
+venv/
+__pycache__/
+*.log
+.env

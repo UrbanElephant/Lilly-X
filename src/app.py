@@ -62,9 +62,15 @@ with st.sidebar:
     st.success(f"**Model:** `{settings.llm_model}`")
     st.info(f"**Embedding:** `{settings.embedding_model}`")
     st.markdown("---")
-    st.markdown("### Status")
+    st.markdown("### Hybrid GraphRAG Status")
     st.write("✅ RAG Engine Ready")
-    st.write("✅ Qdrant Connected")
+    st.write("✅ Qdrant (Vector Store)")
+    
+    # Check if Neo4j is available
+    if hasattr(engine, '_neo4j_driver') and engine._neo4j_driver:
+        st.write("✅ Neo4j (Knowledge Graph)")
+    else:
+        st.write("⚠️ Neo4j (Disabled)")
 
 # Main Interface
 st.title("Lilly-X - Local Knowledge Base 🧠")

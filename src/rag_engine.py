@@ -15,7 +15,6 @@ try:
     from llama_index.llms.ollama import Ollama
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.core.schema import NodeWithScore
-    from llama_index.postprocessor.huggingface_rerank import HuggingFaceRerank
     from qdrant_client import QdrantClient
 except ImportError:
     # Allow import for type checking/linting even if missing
@@ -23,6 +22,7 @@ except ImportError:
 
 from src.config import settings
 from src.database import get_qdrant_client
+from src.graph_database import get_neo4j_driver
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +92,14 @@ STRICT RULES:
         Settings.embed_model = embed_model
         Settings.chunk_size = settings.chunk_size
 
-        # 4. Initialize Reranker for Two-Stage Retrieval
+        # 4. Initialize Neo4j driver for graph queries
         try:
-            logger.info(f"Loading Reranker: {settings.reranker_model}")
-            reranker = HuggingFaceRerank(
-                model=settings.reranker_model,
-                top_n=settings.top_k_final  # Final top 5 results after reranking
-            )
+            logger.info("Initializing Neo4j connection for hybrid retrieval...")
+            self._neo4j_driver = get_neo4j_driver()
+            logger.info("Neo4j connection ready")
         except Exception as e:
-            logger.warning(f"Failed to load reranker: {e}. Falling back to single-stage retrieval.")
-            reranker = None
+            logger.warning(f"Neo4j initialization failed: {e}. Graph queries will be disabled.")
+            self._neo4j_driver = None
 
         # 5. Connect to Vector Store
         try:
@@ -117,20 +115,11 @@ STRICT RULES:
                 storage_context=storage_context,
             )
             
-            # Configure query engine with two-stage retrieval
-            # Stage 1: Fetch 25 candidates (broad net)
-            # Stage 2: Rerank to top 5 (high precision)
-            if reranker:
-                logger.info(f"Two-Stage Retrieval enabled: Fetch {settings.top_k_retrieval} → Rerank to {settings.top_k_final}")
-                self._query_engine = self._index.as_query_engine(
-                    similarity_top_k=settings.top_k_retrieval,  # Fetch 25 candidates
-                    node_postprocessors=[reranker]  # Rerank to top 5
-                )
-            else:
-                logger.info(f"Single-stage retrieval: top_k={settings.top_k}")
-                self._query_engine = self._index.as_query_engine(
-                    similarity_top_k=settings.top_k
-                )
+            # Configure query engine for vector retrieval
+            logger.info(f"Vector retrieval configured: top_k={settings.top_k}")
+            self._query_engine = self._index.as_query_engine(
+                similarity_top_k=settings.top_k
+            )
             
             logger.info("RAG Engine initialized successfully.")
             
@@ -153,10 +142,96 @@ STRICT RULES:
             source_nodes=response_obj.source_nodes
         )
 
-    def retrieve(self, query_text: str) -> List[NodeWithScore]:
-        """Retrieve relevant context nodes without generating an answer."""
+    def query_graph_store(self, query_text: str) -> str:
+        """
+        Query Neo4j graph database for entities and relationships related to the query.
+        
+        Args:
+            query_text: User query string
+            
+        Returns:
+            Formatted string with graph context, or empty string if no results/errors
+        """
+        if not self._neo4j_driver:
+            logger.debug("Neo4j driver not available, skipping graph query")
+            return ""
+        
+        try:
+            # Extract key entities from query using LLM
+            extract_prompt = f"""Extract the key entities, topics, or concepts from this query.
+Return only a comma-separated list of 2-4 key terms, nothing else.
+
+Query: {query_text}
+
+Key terms:"""
+            
+            response = Settings.llm.complete(extract_prompt)
+            keywords = str(response).strip().split(",")
+            keywords = [k.strip().lower() for k in keywords if k.strip()]
+            
+            if not keywords:
+                logger.debug("No keywords extracted from query")
+                return ""
+            
+            logger.info(f"Graph query keywords: {keywords[:3]}")
+            
+            # Query Neo4j for related entities and relationships
+            with self._neo4j_driver.session() as session:
+                # Build Cypher query to find related nodes
+                cypher_query = """
+                MATCH (n)-[r]->(m)
+                WHERE toLower(n.name) CONTAINS $keyword
+                RETURN n.name AS source, type(r) AS relationship, m.name AS target, 
+                       n.entity_type AS source_type, m.entity_type AS target_type
+                LIMIT 20
+                """
+                
+                all_results = []
+                for keyword in keywords[:3]:  # Limit to first 3 keywords
+                    result = session.run(cypher_query, keyword=keyword)
+                    all_results.extend(list(result))
+                
+                if not all_results:
+                    logger.debug("No graph results found")
+                    return ""
+                
+                # Format results as context
+                context_lines = ["\n=== Related Knowledge Graph Information ==="]
+                for record in all_results[:15]:  # Limit to 15 relationships
+                    source = record.get("source", "Unknown")
+                    rel = record.get("relationship", "RELATED_TO")
+                    target = record.get("target", "Unknown")
+                    context_lines.append(f"- {source} {rel} {target}")
+                
+                context_lines.append("="*45)
+                return "\n".join(context_lines)
+                
+        except Exception as e:
+            logger.warning(f"Graph query error: {e}")
+            return ""
+
+    def retrieve(self, query_text: str) -> Tuple[List[NodeWithScore], str]:
+        """
+        Hybrid retrieval: Retrieve from both vector store and graph database.
+        
+        Args:
+            query_text: Query string
+            
+        Returns:
+            Tuple of (vector_nodes, graph_context)
+        """
         if not self._index:
             raise RuntimeError("RAG Engine not initialized.")
-            
+        
+        # 1. Vector retrieval (existing)
         retriever = self._index.as_retriever(similarity_top_k=settings.top_k)
-        return retriever.retrieve(query_text)
+        vector_nodes = retriever.retrieve(query_text)
+        
+        # 2. Graph retrieval (new, with fallback)
+        try:
+            graph_context = self.query_graph_store(query_text)
+        except Exception as e:
+            logger.warning(f"Graph retrieval failed: {e}")
+            graph_context = ""
+        
+        return vector_nodes, graph_context

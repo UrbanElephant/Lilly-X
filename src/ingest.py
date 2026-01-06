@@ -1,7 +1,4 @@
 """Document ingestion pipeline for LLIX RAG system."""
-
-print("Starting ingestion script (initializing imports)...", flush=True)
-
 import json
 import logging
 import hashlib
@@ -10,12 +7,12 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field as PydanticField, field_validator
-
 from llama_index.core import (
     SimpleDirectoryReader,
     VectorStoreIndex,
     StorageContext,
     Settings,
+    PromptTemplate,
 )
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.extractors import (
@@ -35,6 +32,10 @@ from qdrant_client.models import Distance, VectorParams
 from src.config import settings
 from src.database import get_qdrant_client, close_qdrant_client
 
+# --- GRAPH IMPORTS ---
+from src.graph_schema import KnowledgeGraphUpdate
+from src.graph_database import get_neo4j_driver
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -42,495 +43,216 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # =====================================================
-# Pydantic Models for Structured Metadata Extraction
+# Pydantic Models & State
 # =====================================================
 
 class DocumentMetadata(BaseModel):
-    """Structured metadata extracted from documents."""
-    document_type: str = PydanticField(
-        default="Unknown",
-        description="Type of document (e.g., Technical Manual, Fiction, Email, Research Paper)"
-    )
-    authors: Union[str, List[str]] = PydanticField(
-        default="Unknown",
-        description="Name of the primary author(s) or organization"
-    )
-    key_dates: Union[str, List[str]] = PydanticField(
-        default="Unknown",
-        description="Publication date or primary event date mentioned in the text"
-    )
+    document_type: str = PydanticField(default="Unknown")
+    authors: Union[str, List[str]] = PydanticField(default="Unknown")
+    key_dates: Union[str, List[str]] = PydanticField(default="Unknown")
 
     @field_validator('authors', 'key_dates', mode='before')
     @classmethod
     def flatten_list(cls, v: Union[str, List[str]]) -> str:
-        """Allow LLM to return a list, but flatten it to a string for storage."""
         if isinstance(v, list):
             return ", ".join([str(item) for item in v])
         return v
 
-
 class IngestionState:
-    """
-    Manages ingestion state to track which files have been processed.
-    Uses MD5 hashes to detect file changes and enable incremental indexing.
-    """
-    
     def __init__(self, state_file: Path = Path("./ingestion_state.json")):
         self.state_file = state_file
-        self.state: dict[str, str] = {}  # {filename: md5_hash}
+        self.state: dict[str, str] = {}
         
     def load_state(self) -> None:
-        """Load existing state from JSON file."""
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
                     self.state = json.load(f)
-                logger.info(f"✓ Loaded ingestion state: {len(self.state)} files tracked")
-            except Exception as e:
-                logger.warning(f"Failed to load state file: {e}. Starting fresh.")
+            except Exception:
                 self.state = {}
-        else:
-            logger.info("No previous state found. Will process all files.")
-            self.state = {}
     
     def save_state(self) -> None:
-        """Save current state to JSON file."""
         try:
             with open(self.state_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
-            logger.info(f"✓ Saved ingestion state: {len(self.state)} files tracked")
         except Exception as e:
-            logger.error(f"Failed to save state file: {e}")
+            logger.error(f"Failed to save state: {e}")
     
     @staticmethod
     def compute_hash(file_path: Path) -> str:
-        """Compute MD5 hash of a file."""
-        md5_hash = hashlib.md5()
+        md5 = hashlib.md5()
         try:
             with open(file_path, "rb") as f:
-                # Read file in chunks to handle large files
                 for chunk in iter(lambda: f.read(4096), b""):
-                    md5_hash.update(chunk)
-            return md5_hash.hexdigest()
-        except Exception as e:
-            logger.error(f"Failed to compute hash for {file_path}: {e}")
+                    md5.update(chunk)
+            return md5.hexdigest()
+        except Exception:
             return ""
     
     def has_changed(self, file_path: Path) -> bool:
-        """Check if a file has changed since last ingestion."""
-        current_hash = self.compute_hash(file_path)
-        filename = str(file_path)
-        
-        # File is new or changed if hash differs
-        return self.state.get(filename) != current_hash
+        return self.state.get(str(file_path)) != self.compute_hash(file_path)
     
     def update_file(self, file_path: Path) -> None:
-        """Update hash for a processed file."""
-        current_hash = self.compute_hash(file_path)
-        filename = str(file_path)
-        self.state[filename] = current_hash
-
+        self.state[str(file_path)] = self.compute_hash(file_path)
 
 # =====================================================
-# Custom Metadata Extractors
+# Extractors
 # =====================================================
 
 class StructuredMetadataExtractor(BaseExtractor):
-    """
-    Extracts structured metadata (Document Type, Authors, Key Dates) using LLM with JSON mode.
-    Uses Pydantic models to ensure structured output and graceful error handling.
-    """
-    llm: object = LlamaField(description="The LLM to use for extraction")
+    llm: object = LlamaField(description="LLM")
     
     def __init__(self, llm, **kwargs):
         super().__init__(llm=llm, **kwargs)
         
     async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
-        """Extract structured metadata from nodes using LLM with JSON mode."""
         metadata_list = []
-        
         for node in nodes:
-            # Get content (limit to first 2000 chars for efficiency)
             content = node.get_content(metadata_mode="all")[:2000]
-            
-            # Build structured prompt requesting JSON output
-            prompt = f"""Analyze the following text and extract metadata in JSON format.
-
-Extract these fields:
-- document_type: The type of document (e.g., "Technical Manual", "Fiction", "Email", "Research Paper", "Article", "Tutorial", "Blog Post"). If unclear, use "General Document".
-- authors: The name of the primary author(s) or organization. If not found, use "Unknown".
-- key_dates: Any publication date, event date, or significant timestamp mentioned. Format as YYYY-MM-DD if possible. If not found, use "Unknown".
-
-Text:
-{content}
-
-Respond with ONLY a JSON object in this exact format:
-{{
-    "document_type": "<type>",
-    "authors": "<author names>",
-    "key_dates": "<dates>"
-}}"""
-            
+            prompt = f"Extract metadata (document_type, authors, key_dates) as JSON from:\n{content}"
             try:
-                # Call LLM with JSON mode (Ollama-specific)
-                # Note: Ollama's complete() doesn't support format parameter,
-                # so we rely on prompt engineering for JSON output
                 response = await self.llm.acomplete(prompt)
-                response_text = str(response).strip()
-                
-                # Try to parse JSON response
-                try:
-                    # Extract JSON from response (handle cases where LLM adds extra text)
-                    # Find the first { and last }
-                    start_idx = response_text.find('{')
-                    end_idx = response_text.rfind('}') + 1
-                    
-                    if start_idx != -1 and end_idx > start_idx:
-                        json_str = response_text[start_idx:end_idx]
-                        metadata_dict = json.loads(json_str)
-                        
-                        # Validate with Pydantic model
-                        validated_metadata = DocumentMetadata(**metadata_dict)
-                        
-                        # Convert to dict for storage
-                        metadata_list.append(validated_metadata.model_dump())
-                        logger.debug(f"Extracted metadata: {validated_metadata.model_dump()}")
-                    else:
-                        raise ValueError("No JSON object found in response")
-                        
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"Failed to parse JSON from LLM response: {e}. Using defaults.")
-                    metadata_list.append(DocumentMetadata().model_dump())
-                    
-            except Exception as e:
-                # Fallback on any error
-                logger.warning(f"Metadata extraction failed: {e}. Using defaults.")
                 metadata_list.append(DocumentMetadata().model_dump())
-                
+            except Exception:
+                metadata_list.append(DocumentMetadata().model_dump())
         return metadata_list
 
-
-class LLMEntityExtractor(BaseExtractor):
+class GraphExtractor(BaseExtractor):
     """
-    Extracts entities using the configured LLM instead of an external library.
-    Robust replacement for the fragile SpanMarker EntityExtractor.
+    Extracts Knowledge Graph entities/relationships and writes them DIRECTLY to Neo4j.
     """
     llm: object = LlamaField(description="The LLM to use for extraction")
-    
+
     def __init__(self, llm, **kwargs):
         super().__init__(llm=llm, **kwargs)
-        
+
     async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
+        print(f"DEBUG: GraphExtractor called for {len(nodes)} nodes", flush=True)
+        
+        graph_prompt = PromptTemplate(
+            "Extract knowledge graph nodes (Entities) and relationships from the text below.\n"
+            "Use strict JSON format matching the schema.\n"
+            "Text:\n{text}"
+        )
+
         metadata_list = []
         for node in nodes:
-            # Simple prompt to get entities
-            content = node.get_content(metadata_mode="all")
-            prompt = (
-                f"Analyze the following text and extract key entities (People, Organizations, Technologies). "
-                f"Return ONLY a comma-separated list of entities. If none, return 'None'.\n\n"
-                f"Text: {content[:1000]}\nEntities:"
-            )
             try:
-                # Use the LLM directly
-                response = await self.llm.acomplete(prompt)
-                entities = str(response).strip()
-                metadata_list.append({"entities": entities})
+                content = node.get_content(metadata_mode="all")[:3000]
+                
+                kg_data = await self.llm.astructured_predict(
+                    KnowledgeGraphUpdate,
+                    prompt=graph_prompt,
+                    text=content
+                )
+                
+                # Write to DB
+                if kg_data and (kg_data.entities or kg_data.relationships):
+                    self._write_to_neo4j(kg_data)
+                
+                metadata_list.append({"graph_extracted": True})
             except Exception as e:
-                # Fallback on error
-                metadata_list.append({"entities": "Error extracting entities"})
+                print(f"ERROR in GraphExtractor: {e}", flush=True)
+                metadata_list.append({"graph_error": str(e)})
         return metadata_list
 
+    def _write_to_neo4j(self, data: KnowledgeGraphUpdate):
+        driver = get_neo4j_driver()
+        if not driver:
+            print("ERROR: No Neo4j driver available!", flush=True)
+            return
+
+        print(f"DEBUG: Writing {len(data.entities)} entities and {len(data.relationships)} rels to Neo4j", flush=True)
+        
+        try:
+            with driver.session() as session:
+                # 1. Write Entities
+                for entity in data.entities:
+                    # Using 'entity_type' instead of 'label' as per schema
+                    # Sanitizing label to avoid Cypher injection (simple alphanumeric check recommended in prod)
+                    label = entity.entity_type if entity.entity_type.isalnum() else "Entity"
+                    
+                    cypher = f"MERGE (n:{label} {{name: $name}})"
+                    session.run(cypher, name=entity.name)
+                
+                # 2. Write Relationships
+                for rel in data.relationships:
+                    # Schema has flattened fields: source_type, source_entity, etc.
+                    s_label = rel.source_type if rel.source_type.isalnum() else "Entity"
+                    t_label = rel.target_type if rel.target_type.isalnum() else "Entity"
+                    r_type = rel.relationship_type.upper() # Ensure uppercase for relationship types
+                    
+                    cypher = f"""
+                        MATCH (source:{s_label} {{name: $source_name}})
+                        MATCH (target:{t_label} {{name: $target_name}})
+                        MERGE (source)-[r:{r_type}]->(target)
+                    """
+                    session.run(cypher, 
+                                source_name=rel.source_entity, 
+                                target_name=rel.target_entity)
+                                
+        except Exception as e:
+            print(f"ERROR writing to Neo4j DB: {e}", flush=True)
+
+# =====================================================
+# Pipeline Setup
+# =====================================================
 
 def setup_llama_index():
-    """Configure LlamaIndex global settings with LLM and embedding model."""
-    logger.info("Setting up LlamaIndex configuration...")
-    
-    # Configure LLM (Mistral-Nemo for metadata extraction)
-    logger.info(f"Loading LLM: {settings.llm_model}")
-    llm = Ollama(
-        model=settings.llm_model,
-        base_url=settings.ollama_base_url,
-        request_timeout=1200.0,  # Correct parameter name for Ollama client timeout
-        context_window=8192,
-    )
-    
-    # Configure embedding model
-    logger.info(f"Loading embedding model: {settings.embedding_model}")
-    embed_model = HuggingFaceEmbedding(
-        model_name=settings.embedding_model,
-        cache_folder="./models",
-    )
-    
-    # Configure chunk settings
-    text_splitter = SentenceSplitter(
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-    )
-    
-    # Set global settings
+    llm = Ollama(model=settings.llm_model, base_url=settings.ollama_base_url, request_timeout=1200.0, context_window=8192)
+    embed_model = HuggingFaceEmbedding(model_name=settings.embedding_model, cache_folder="./models")
     Settings.llm = llm
     Settings.embed_model = embed_model
-    Settings.text_splitter = text_splitter
-    Settings.chunk_size = settings.chunk_size
-    Settings.chunk_overlap = settings.chunk_overlap
-    
-    logger.info("✓ LlamaIndex configuration complete")
-    
     return llm, embed_model
 
-
-
 def get_advanced_pipeline(llm, embed_model, vector_store=None):
-    """
-    Creates an advanced IngestionPipeline with Semantic Splitting and Metadata Enrichment.
-    
-    Args:
-        llm: Language model for metadata extraction
-        embed_model: Embedding model for semantic splitting and embeddings
-        vector_store: Optional vector store for incremental persistence (streaming upsert)
-    """
     return IngestionPipeline(
         transformations=[
-            # 1. Semantic Splitting (Dynamic boundaries based on embedding distance)
-            SemanticSplitterNodeParser(
-                buffer_size=1, 
-                breakpoint_percentile_threshold=95, 
-                embed_model=embed_model
-            ),
-            
-            # 2. Metadata Enrichment (The 'Golden Source' Logic)
-            # Extracts a summary of the prev/current/next chunk context
-            SummaryExtractor(llm=llm, summaries=["prev", "self", "next"]),
-            # Generates 3 questions that this chunk can answer (improves retrieval match)
-            QuestionsAnsweredExtractor(llm=llm, questions=3),
-            # Extracts structured metadata (Document Type, Authors, Key Dates)
+            SemanticSplitterNodeParser(buffer_size=1, breakpoint_percentile_threshold=95, embed_model=embed_model),
             StructuredMetadataExtractor(llm=llm),
-            # Extracts entities (People, Orgs, Tech) using LLM
-            LLMEntityExtractor(llm=llm),
-            
-            # 3. Embedding Generation
+            GraphExtractor(llm=llm),
             embed_model,
         ],
-        vector_store=vector_store,  # Enable streaming upsert if provided
+        vector_store=vector_store,
     )
 
 def create_collection_if_not_exists(client: QdrantClient, collection_name: str) -> None:
-    """
-    Create Qdrant collection if it doesn't exist.
-    
-    Args:
-        client: Qdrant client instance
-        collection_name: Name of the collection to create
-    """
     try:
-        # Check if collection exists
         client.get_collection(collection_name)
-        logger.info(f"✓ Collection '{collection_name}' already exists")
     except Exception:
-        # Collection doesn't exist, create it
-        logger.info(f"Creating collection '{collection_name}'...")
-        
-        # Get embedding dimension from the model
-        # BAAI/bge-large-en-v1.5 produces 1024-dimensional vectors
-        vector_size = 1024
-        
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=vector_size,
-                distance=Distance.COSINE,
-            ),
-        )
-        logger.info(f"✓ Collection '{collection_name}' created successfully")
+        client.create_collection(collection_name=collection_name, vectors_config=VectorParams(size=1024, distance=Distance.COSINE))
 
-
-def ingest_documents(
-    docs_dir: Optional[Path] = None,
-    file_extensions: Optional[List[str]] = None,
-) -> VectorStoreIndex:
-    """
-    Ingest documents from a directory into Qdrant.
-    
-    Args:
-        docs_dir: Directory containing documents to ingest
-        file_extensions: List of file extensions to process (e.g., ['.txt', '.pdf'])
-    
-    Returns:
-        VectorStoreIndex: The created index
-    """
-    # Use default docs directory if not provided
-    if docs_dir is None:
-        docs_dir = settings.docs_dir
-    
-    if file_extensions is None:
-        file_extensions = [".txt", ".pdf", ".md"]
-    
-    logger.info("=" * 70)
-    logger.info("Lilly-X Document Ingestion Pipeline")
-    logger.info("=" * 70)
-    logger.info(f"Documents directory: {docs_dir}")
-    logger.info(f"File extensions: {file_extensions}")
-    logger.info(f"Qdrant URL: {settings.qdrant_url}")
-    logger.info(f"Collection: {settings.qdrant_collection}")
-    logger.info("")
-    
-    # Setup LlamaIndex
+def ingest_documents(docs_dir: Optional[Path] = None) -> VectorStoreIndex:
+    if docs_dir is None: docs_dir = settings.docs_dir
     llm, embed_model = setup_llama_index()
-    
-    # Get Qdrant client
-    logger.info("Connecting to Qdrant...")
     client = get_qdrant_client()
-    
-    # Create collection if needed
     create_collection_if_not_exists(client, settings.qdrant_collection)
     
-    # === INCREMENTAL INDEXING LOGIC ===
-    logger.info("Checking for new or modified files...")
-    
-    # Initialize ingestion state
     ingestion_state = IngestionState()
     ingestion_state.load_state()
     
-    # Scan docs directory for all files with specified extensions
-    all_files = []
-    for ext in file_extensions:
-        all_files.extend(docs_dir.glob(f"**/*{ext}"))
+    all_files = list(docs_dir.glob("**/*.pdf")) + list(docs_dir.glob("**/*.txt")) + list(docs_dir.glob("**/*.md"))
+    files_to_process = [f for f in all_files if ingestion_state.has_changed(f)]
     
-    logger.info(f"Found {len(all_files)} total file(s) in {docs_dir}")
+    if not files_to_process:
+        logger.info("No new files.")
+        return VectorStoreIndex.from_vector_store(vector_store=QdrantVectorStore(client=client, collection_name=settings.qdrant_collection))
     
-    # Identify new or modified files
-    files_to_process = []
-    skipped_files = []
+    logger.info(f"Processing {len(files_to_process)} files...")
+    documents = SimpleDirectoryReader(input_files=[str(f) for f in files_to_process]).load_data()
     
-    for file_path in all_files:
-        if ingestion_state.has_changed(file_path):
-            files_to_process.append(file_path)
-        else:
-            skipped_files.append(file_path)
-    
-    # Log statistics
-    logger.info(f"Files to process: {len(files_to_process)} (new or modified)")
-    logger.info(f"Files skipped: {len(skipped_files)} (unchanged)")
-    logger.info("")
-    
-    # Early return if no files to process
-    if len(files_to_process) == 0:
-        logger.info("=" * 70)
-        logger.info("✅ No new or modified files to ingest")
-        logger.info("=" * 70)
-        logger.info("All files are up to date. Skipping ingestion.")
-        logger.info("")
-        
-        # Return existing index
-        vector_store = QdrantVectorStore(
-            client=client,
-            collection_name=settings.qdrant_collection,
-        )
-        return VectorStoreIndex.from_vector_store(vector_store=vector_store)
-    
-    # Display files to be processed
-    logger.info("Files to process:")
-    for i, file_path in enumerate(files_to_process, 1):
-        logger.info(f"  {i}. {file_path.name}")
-    
-    if skipped_files:
-        logger.info("\nFiles skipped (unchanged):")
-        for file_path in skipped_files[:5]:  # Show only first 5
-            logger.info(f"  - {file_path.name}")
-        if len(skipped_files) > 5:
-            logger.info(f"  ... and {len(skipped_files) - 5} more")
-    logger.info("")
-    
-    # Load only the files that need processing
-    logger.info(f"Loading {len(files_to_process)} document(s)...")
-    documents = SimpleDirectoryReader(
-        input_files=[str(f) for f in files_to_process],
-    ).load_data()
-    
-    if len(documents) == 0:
-        logger.warning(f"No documents found in {docs_dir}")
-        logger.info("Please add documents to the directory and try again.")
-        return None
-    
-    for i, doc in enumerate(documents, 1):
-        logger.info(f"  {i}. {Path(doc.metadata.get('file_name', 'unknown')).name}")
-    logger.info("")
-    
-    # Create vector store
-    logger.info("Creating Qdrant vector store...")
-    vector_store = QdrantVectorStore(
-        client=client,
-        collection_name=settings.qdrant_collection,
-    )
-    
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    
-    # --- ADVANCED PIPELINE LOGIC WITH STREAMING UPSERT ---
-    # 1. Initialize the Advanced Pipeline with vector store for incremental persistence
-    logger.info("Initializing Advanced Ingestion Pipeline with streaming upsert...")
+    vector_store = QdrantVectorStore(client=client, collection_name=settings.qdrant_collection)
     pipeline = get_advanced_pipeline(llm, embed_model, vector_store=vector_store)
-
-    # 2. Run the Pipeline (Transformation & Embedding + Automatic Persistence)
-    logger.info("🚀 Running Pipeline: Semantic Splitting & Metadata Enrichment...")
-    logger.info("(This will take longer than before due to LLM processing)")
-    logger.info("(Data is being saved incrementally - safe to interrupt)")
     
-    # Passing documents through the pipeline generates and PERSISTS 'nodes'
-    nodes = pipeline.run(documents=documents, show_progress=True, num_workers=1)
-    logger.info(f"✓ Pipeline finished. Generated {len(nodes)} enriched nodes.")
-
-    # 3. Create Index from Vector Store (data already persisted)
-    # Since the pipeline saved nodes incrementally, we just create an index reference
-    logger.info("Creating index from persisted vector store...")
-    index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+    logger.info("🚀 Running GraphRAG Pipeline...")
+    pipeline.run(documents=documents, show_progress=True)
     
-    # === UPDATE INGESTION STATE ===
-    # Update hashes for all successfully processed files
-    logger.info("Updating ingestion state...")
-    for file_path in files_to_process:
-        ingestion_state.update_file(file_path)
+    for f in files_to_process:
+        ingestion_state.update_file(f)
     ingestion_state.save_state()
     
-    logger.info("")
-    logger.info("=" * 70)
-    logger.info("✅ Ingestion Complete!")
-    logger.info("=" * 70)
-    logger.info(f"Documents processed: {len(documents)}")
-    logger.info(f"Documents skipped: {len(skipped_files)} (unchanged)")
-    logger.info(f"Collection: {settings.qdrant_collection}")
-    logger.info(f"Vector store: {settings.qdrant_url}")
-    logger.info("")
-    
-    # Get collection info
-    collection_info = client.get_collection(settings.qdrant_collection)
-    logger.info(f"Total vectors in collection: {collection_info.points_count}")
-    logger.info("")
-    
-    return index
-
+    return VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
 if __name__ == "__main__":
-    """Run document ingestion."""
-    try:
-        # Check if docs directory exists
-        docs_path = Path("./data/docs")
-        if not docs_path.exists():
-            logger.error(f"Documents directory not found: {docs_path}")
-            logger.info("Please create the directory and add documents.")
-            exit(1)
-        
-        # Run ingestion
-        index = ingest_documents(docs_dir=docs_path)
-        
-        if index is not None:
-            logger.info("Ingestion successful! You can now query the RAG system.")
-        
-    except KeyboardInterrupt:
-        logger.info("\nIngestion cancelled by user")
-    except Exception as e:
-        logger.error(f"Ingestion failed: {e}", exc_info=True)
-        exit(1)
-    finally:
-        close_qdrant_client()
+    ingest_documents(Path("./data/docs"))
