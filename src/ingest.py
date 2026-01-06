@@ -2,9 +2,12 @@
 
 print("Starting ingestion script (initializing imports)...", flush=True)
 
+import json
 import logging
 from pathlib import Path
 from typing import List, Optional
+
+from pydantic import BaseModel, Field as PydanticField
 
 from llama_index.core import (
     SimpleDirectoryReader,
@@ -19,7 +22,7 @@ from llama_index.core.extractors import (
     QuestionsAnsweredExtractor,
 )
 from llama_index.core.schema import BaseNode
-from llama_index.core.bridge.pydantic import Field
+from llama_index.core.bridge.pydantic import Field as LlamaField
 from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
@@ -38,12 +41,111 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# =====================================================
+# Pydantic Models for Structured Metadata Extraction
+# =====================================================
+
+class DocumentMetadata(BaseModel):
+    """Structured metadata extracted from documents."""
+    document_type: str = PydanticField(
+        default="Unknown",
+        description="Type of document (e.g., Technical Manual, Fiction, Email, Research Paper)"
+    )
+    authors: str = PydanticField(
+        default="Unknown",
+        description="Name of the primary author(s) or organization"
+    )
+    key_dates: str = PydanticField(
+        default="Unknown",
+        description="Publication date or primary event date mentioned in the text"
+    )
+
+
+# =====================================================
+# Custom Metadata Extractors
+# =====================================================
+
+class StructuredMetadataExtractor(BaseExtractor):
+    """
+    Extracts structured metadata (Document Type, Authors, Key Dates) using LLM with JSON mode.
+    Uses Pydantic models to ensure structured output and graceful error handling.
+    """
+    llm: object = LlamaField(description="The LLM to use for extraction")
+    
+    def __init__(self, llm, **kwargs):
+        super().__init__(llm=llm, **kwargs)
+        
+    async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
+        """Extract structured metadata from nodes using LLM with JSON mode."""
+        metadata_list = []
+        
+        for node in nodes:
+            # Get content (limit to first 2000 chars for efficiency)
+            content = node.get_content(metadata_mode="all")[:2000]
+            
+            # Build structured prompt requesting JSON output
+            prompt = f"""Analyze the following text and extract metadata in JSON format.
+
+Extract these fields:
+- document_type: The type of document (e.g., "Technical Manual", "Fiction", "Email", "Research Paper", "Article", "Tutorial", "Blog Post"). If unclear, use "General Document".
+- authors: The name of the primary author(s) or organization. If not found, use "Unknown".
+- key_dates: Any publication date, event date, or significant timestamp mentioned. Format as YYYY-MM-DD if possible. If not found, use "Unknown".
+
+Text:
+{content}
+
+Respond with ONLY a JSON object in this exact format:
+{{
+    "document_type": "<type>",
+    "authors": "<author names>",
+    "key_dates": "<dates>"
+}}"""
+            
+            try:
+                # Call LLM with JSON mode (Ollama-specific)
+                # Note: Ollama's complete() doesn't support format parameter,
+                # so we rely on prompt engineering for JSON output
+                response = await self.llm.acomplete(prompt)
+                response_text = str(response).strip()
+                
+                # Try to parse JSON response
+                try:
+                    # Extract JSON from response (handle cases where LLM adds extra text)
+                    # Find the first { and last }
+                    start_idx = response_text.find('{')
+                    end_idx = response_text.rfind('}') + 1
+                    
+                    if start_idx != -1 and end_idx > start_idx:
+                        json_str = response_text[start_idx:end_idx]
+                        metadata_dict = json.loads(json_str)
+                        
+                        # Validate with Pydantic model
+                        validated_metadata = DocumentMetadata(**metadata_dict)
+                        
+                        # Convert to dict for storage
+                        metadata_list.append(validated_metadata.model_dump())
+                        logger.debug(f"Extracted metadata: {validated_metadata.model_dump()}")
+                    else:
+                        raise ValueError("No JSON object found in response")
+                        
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Failed to parse JSON from LLM response: {e}. Using defaults.")
+                    metadata_list.append(DocumentMetadata().model_dump())
+                    
+            except Exception as e:
+                # Fallback on any error
+                logger.warning(f"Metadata extraction failed: {e}. Using defaults.")
+                metadata_list.append(DocumentMetadata().model_dump())
+                
+        return metadata_list
+
+
 class LLMEntityExtractor(BaseExtractor):
     """
     Extracts entities using the configured LLM instead of an external library.
     Robust replacement for the fragile SpanMarker EntityExtractor.
     """
-    llm: object = Field(description="The LLM to use for extraction")
+    llm: object = LlamaField(description="The LLM to use for extraction")
     
     def __init__(self, llm, **kwargs):
         super().__init__(llm=llm, **kwargs)
@@ -131,6 +233,8 @@ def get_advanced_pipeline(llm, embed_model, vector_store=None):
             SummaryExtractor(llm=llm, summaries=["prev", "self", "next"]),
             # Generates 3 questions that this chunk can answer (improves retrieval match)
             QuestionsAnsweredExtractor(llm=llm, questions=3),
+            # Extracts structured metadata (Document Type, Authors, Key Dates)
+            StructuredMetadataExtractor(llm=llm),
             # Extracts entities (People, Orgs, Tech) using LLM
             LLMEntityExtractor(llm=llm),
             

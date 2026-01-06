@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Data Configuration
     docs_dir: Path = Field(
-        default=Path("./data/books"),
+        default=Path("./data/docs"),
         description="Directory containing documents to ingest",
     )
 

@@ -11,6 +11,42 @@ A high-performance Local Retrieval-Augmented Generation (RAG) system optimized f
 - **Framework**: LlamaIndex
 - **Hardware Acceleration**: AMD Radeon 8060S iGPU (32GB VRAM) with ROCm
 
+### Ingestion Pipeline Flow
+
+```mermaid
+flowchart TD
+    subgraph Ingestion ["Ingestion Pipeline (Golden Source)"]
+        direction TB
+        Docs[📄 Raw Documents] -->|Load| Reader[SimpleDirectoryReader]
+        Reader --> Nodes[Raw Nodes]
+
+        Nodes -->|Dynamic Chunking| Splitter[✨ SemanticSplitterNodeParser]
+        Splitter -->|Context-Aware Chunks| Chunks[Text Chunks]
+
+        subgraph Enrichment ["Metadata Enrichment Layer"]
+            direction TB
+            Chunks -->|Extract| Meta[🏷️ MetadataExtractor]
+            Chunks -->|Extract| Ent[🏢 EntityExtractor]
+            Chunks -->|Generate| QA[❓ QA_Extractor]
+            Chunks -->|Summarize| Sum[📝 SummaryExtractor]
+
+            Meta -.->|Type, Author, Date| GoldenNode
+            Ent -.->|Orgs, People, Tech| GoldenNode
+            QA -.->|Synthetic Questions| GoldenNode
+            Sum -.->|Prev/Next Context| GoldenNode
+        end
+
+        Enrichment --> GoldenNode[🌟 Golden Source Node]
+    end
+
+    GoldenNode -->|Embed| BGE[Embedding Model bge-m3]
+    BGE -->|Store| Qdrant[(Qdrant Vector DB)]
+
+    style GoldenNode fill:#f9f,stroke:#333,stroke-width:2px,color:black
+    style Splitter fill:#bbf,stroke:#333,stroke-width:1px,color:black
+    style Qdrant fill:#bfb,stroke:#333,stroke-width:2px,color:black
+```
+
 ### Hardware Optimization
 
 Optimized for **AMD Ryzen AI MAX-395** workstations:
@@ -22,12 +58,6 @@ Optimized for **AMD Ryzen AI MAX-395** workstations:
 
 ## Features
 
-### 🧠 Semantic Chunking
-Moved beyond naive fixed-size splitting. Uses **SemanticSplitterNodeParser** to dynamically chunk text based on:
-- **Embedding similarity**: Chunks split at natural semantic boundaries
-- **Topic shifts detection**: Maintains coherent context within chunks
-- **Adaptive sizing**: Chunk boundaries respect content structure
-
 ### 🛡️ Fault-Tolerant Ingestion
 Refactored ingestion pipeline for production resilience:
 - **Streaming Upserts**: Data persists to Qdrant immediately after processing
@@ -35,11 +65,18 @@ Refactored ingestion pipeline for production resilience:
 - **Incremental Checkpointing**: Resume from last successful batch
 - **No Memory Overflow**: Handles documents of any size
 
-### ✨ Rich Metadata Enrichment
-Each document node is automatically enriched with:
-- **Extracted Entities**: People, organizations, technologies identified via LLM
-- **Synthetic QA Pairs**: Questions generated from content for enhanced retrieval accuracy
-- **Context Summaries**: Prev/self/next chunk summaries for better relevance
+### 🌟 "Golden Source" Ingestion Pipeline
+We treat data ingestion as an engineering discipline, not just a script. The pipeline transforms raw text into "Golden Source" nodes rich in context and metadata:
+
+1.  **🧠 Semantic Chunking**: 
+    Instead of fixed-size slicing, we use the `SemanticSplitterNodeParser`. It analyzes embedding distances to break text only at natural topic transitions, ensuring every chunk is a coherent thought.
+
+2.  **✨ Four-Layer Metadata Enrichment**:
+    Every chunk passes through a rigorous enrichment process before storage:
+    * **Structured Metadata**: Automatically detects *Document Type*, *Author*, and *Timestamps* (e.g., "Technical Manual", "2024-Q1").
+    * **Context Preservation**: The `SummaryExtractor` injects summaries of the *previous* and *next* chunks, solving the "lost context" problem of retrieval.
+    * **Synthetic QA**: The `QuestionsAnsweredExtractor` generates questions the chunk can answer, improving semantic matching for user queries.
+    * **Entity Extraction**: Identifies key *People*, *Organizations*, and *Technologies* for filtering and knowledge graph potential.
 
 ### ⚡ Performance Optimizations
 - **Sequential Processing**: `num_workers=1` prevents Ollama timeout errors

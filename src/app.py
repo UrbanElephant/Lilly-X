@@ -5,18 +5,35 @@ from src.config import settings
 
 
 def format_metadata(metadata: dict) -> str:
-    """Formats rich metadata for display if present."""
+    """Formats rich metadata for display including Golden Source fields."""
     extras = []
     
+    # --- Golden Source Header ---
+    # Display Type, Author, and Date prominently if available
+    header_parts = []
+    if "document_type" in metadata:
+        header_parts.append(f"📄 {metadata['document_type']}")
+    if "authors" in metadata and metadata['authors'] != "None":
+        header_parts.append(f"✍️ {metadata['authors']}")
+    if "key_dates" in metadata and metadata['key_dates'] != "Unknown":
+        header_parts.append(f"📅 {metadata['key_dates']}")
+        
+    if header_parts:
+        extras.append(f"**{' | '.join(header_parts)}**")
+    # ----------------------------
+
     # Format Questions
     if "questions_this_excerpt_can_answer" in metadata:
         q_str = metadata["questions_this_excerpt_can_answer"]
         extras.append(f"**❓ Relevante Fragen:**\n{q_str}")
     
-    # Format Entities
-    if "excerpt_keywords" in metadata:
-        e_str = metadata["excerpt_keywords"]
+    # Format Entities (Handle both potential key names from different extractors)
+    if "entities" in metadata:
+        e_str = metadata["entities"]
         extras.append(f"**🏢 Entitäten:**\n{e_str}")
+    elif "excerpt_keywords" in metadata:
+        e_str = metadata["excerpt_keywords"]
+        extras.append(f"**🏢 Keywords:**\n{e_str}")
         
     return "\n\n".join(extras)
 
