@@ -1,4 +1,4 @@
-# LLIX - Local Hybrid GraphRAG
+# Lilly-X - Local Hybrid GraphRAG
 
 [![Python](https://img.shields.io/badge/python-3.12-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
