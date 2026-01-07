@@ -20,7 +20,67 @@ LLIX (Lilly-X) is a fully operational local RAG system combining semantic vector
 
 ---
 
-## 🏗️ Architecture Overview
+## 🚀 New in v3.1 (Architecture Upgrade)
+
+### 🧠 Multi-Turn Memory
+**Context-aware conversations via `MemoryManager`**
+- Persistent chat sessions with UUID-based tracking
+- Automatic FIFO trimming to prevent token overflow
+- Conversation history injection into prompts
+- Configurable memory window (default: 10 turns)
+
+### 🔍 Entity Disambiguation  
+**Graph-based resolution via `GraphOperations`**
+- Resolves entity aliases to canonical names using Knowledge Graph
+- Automatic graph traversal to discover related entities
+- Confidence scoring for disambiguation quality
+- Seamless integration with existing RAG pipeline
+
+**Implementation**: [`src/memory.py`](src/memory.py), [`src/graph_ops.py`](src/graph_ops.py), [`src/prompts.py`](src/prompts.py)
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+graph TD
+    %% Client Layer
+    User([User / Frontend]) <--> API[FastAPI / App]
+
+    %% Application Layer (The Logic)
+    subgraph "Lilly-X Core (v3.1)"
+        API -->|1. Get Context| Mem[Memory Manager]
+        API -->|2. Resolve Entities| GraphOps[Graph Operations]
+        API -->|3. Vector Search| RAG[RAG Engine]
+        
+        Mem -.->|Prune/Retrieve| HistoryStore[(Session History)]
+        GraphOps -.->|Cypher Queries| Neo4j[(Neo4j GraphDB)]
+        RAG -.->|Embeddings| Qdrant[(Qdrant VectorDB)]
+    end
+
+    %% Synthesis Layer
+    subgraph "Cognitive Layer"
+        Prompt{Context Injection}
+        Mem & GraphOps & RAG --> Prompt
+        Prompt -->|Generate| LLM[Ollama / LLM]
+    end
+
+    LLM -->|Response| API
+```
+
+**Enhanced Query Flow (v3.1)**:
+1. **User Query** → Streamlit UI captures input
+2. **Memory Retrieval** → Load last N turns from persistent session
+3. **Entity Resolution** → Extract entities, resolve via Knowledge Graph
+4. **Context Expansion** → Traverse graph to find related concepts
+5. **Vector Retrieval** → Semantic search in Qdrant for relevant documents
+6. **Prompt Synthesis** → Combine conversation history + graph context + vector results
+7. **LLM Generation** → Ollama generates contextual response
+8. **History Update** → Save user query + assistant response to session
+
+---
+
+## 🏗️ Legacy Pipeline Architecture
 
 ```
 ┌──────────────┐
@@ -220,19 +280,24 @@ LLIX/
 │   ├── config.py           # Centralized Pydantic settings
 │   ├── database.py         # Qdrant client singleton
 │   ├── graph_database.py   # Neo4j driver + connection logic
-│   ├── graph_schema.py     # Pydantic models (Entity, Relationship)
+│   ├── graph_schema.py     # Pydantic models (Entity, Relationship) + Disambiguation
+│   ├── memory_schema.py    # 🆕 v3.1: Chat session models
+│   ├── memory.py           # 🆕 v3.1: Conversation memory manager
+│   ├── graph_ops.py        # 🆕 v3.1: Entity resolution & graph traversal
+│   ├── prompts.py          # 🆕 v3.1: Prompt template system
 │   ├── ingest.py           # ✅ GraphExtractor + Hybrid Pipeline
 │   ├── rag_engine.py       # Dual-store retrieval + LLM generation
 │   ├── query.py            # CLI query interface
-│   └── app.py              # Streamlit UI
+│   └── app.py              # Streamlit UI (Enhanced with v3.1)
 ├── data/
-│   └── docs/               # Your documents (auto-processed)
+│   ├── docs/               # Your documents (auto-processed)
+│   └── memory/             # 🆕 v3.1: Chat session persistence
 ├── compose.yaml            # Qdrant + Neo4j services
 ├── start_all.sh            # Robust startup script (health checks)
 ├── run_ingestion.sh        # Ingestion wrapper (activates venv)
 ├── requirements.txt        # Python 3.12 dependencies
-├── .env.template           # Environment template
-├── .gitignore              # Excludes venv/, neo4j_data/, qdrant_storage/
+├── .env.template           # Environment template (updated for v3.1)
+├── .gitignore              # Security: Excludes .env, data/, *.log
 └── README.md               # This file
 ```
 
@@ -247,6 +312,9 @@ LLIX/
 | **Vector Storage** | ✅ OPERATIONAL | Qdrant embeddings created and queryable |
 | **Hybrid Retrieval** | ✅ FUNCTIONAL | Parallel query to both stores working |
 | **Streamlit UI** | ✅ DEPLOYED | ChatGPT-like interface with source citations |
+| **Multi-Turn Memory** | ✅ v3.1 | Persistent conversation sessions with FIFO trimming |
+| **Entity Disambiguation** | ✅ v3.1 | Graph-based canonical name resolution |
+| **Prompt Templates** | ✅ v3.1 | Modular context injection system |
 | **Python 3.12 Migration** | ✅ COMPLETE | Clean venv with verified dependencies |
 
 ---
@@ -258,17 +326,20 @@ Every critical operation prints to stdout:
 ```python
 print("🔗 Connecting to Neo4j...", flush=True)
 print(f"✅ Writing {len(entities)} entities to graph", flush=True)
+print(f"📝 Loaded {len(session.messages)} messages from history", flush=True)
 ```
 
 ### Idempotent Operations
 - **Cypher `MERGE`**: Entities/relationships created only if they don't exist
 - **Hash Tracking**: `ingestion_state.json` prevents duplicate processing
 - **Startup Script**: Handles existing containers gracefully (safe to re-run)
+- **Session Management**: Safe concurrent access via thread locks
 
 ### Type Safety
 - Pydantic models for all configs and structured data
 - Explicit validation with `@field_validator`
 - No runtime "surprises" from schema mismatches
+- Strict type hints throughout (Python 3.12+)
 
 ---
 
@@ -306,6 +377,18 @@ ollama pull mistral-nemo:12b
 curl http://localhost:11434/api/tags
 ```
 
+### Memory Session Not Persisting
+
+**Cause**: Persistence not enabled or write permissions  
+**Solution**:
+```bash
+# Check data directory permissions
+ls -la data/memory/
+
+# Enable persistence in app initialization
+# MemoryManager(use_persistence=True)
+```
+
 ---
 
 ## 📚 Related Documentation
@@ -318,18 +401,26 @@ curl http://localhost:11434/api/tags
 
 ## 🗺️ Roadmap
 
-### v3.0 (Current) ✅
+### v3.0 (Completed) ✅
 - [x] Hybrid GraphRAG architecture
 - [x] Custom GraphExtractor with Pydantic validation
 - [x] Neo4j Cypher integration (idempotent writes)
 - [x] Python 3.12 migration
 - [x] Incremental indexing (hash-based)
 
-### v3.1 (Next)
-- [ ] Multi-turn conversation memory
-- [ ] Graph-based query expansion
-- [ ] Entity disambiguation
-- [ ] Reranker integration (FlashRank)
+### v3.1 (Completed) ✅
+- [x] Multi-turn conversation memory with persistent sessions
+- [x] Graph-based entity resolution and disambiguation
+- [x] Knowledge graph query expansion
+- [x] Modular prompt template system
+- [x] Enhanced Streamlit UI with debug visibility
+
+### v3.2 (Planned)
+- [ ] Async operations for improved performance
+- [ ] Multi-user authentication and session isolation
+- [ ] Conversation branching and history export
+- [ ] Advanced NER for entity extraction (spaCy/HuggingFace)
+- [ ] RAG engine integration with enhanced prompts
 
 ---
 

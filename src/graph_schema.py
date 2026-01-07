@@ -28,7 +28,7 @@ RelationshipType = Literal[
 # ============================================================
 
 class GraphEntity(BaseModel):
-    """Base class for all graph entities."""
+    """Base class for all graph entities with disambiguation support."""
     
     name: str = Field(..., description="Primary name/identifier for the entity")
     entity_type: str = Field(..., description="Type of entity (Person, Organization, etc.)")
@@ -43,6 +43,24 @@ class GraphEntity(BaseModel):
         le=1.0,
         description="Confidence score for entity extraction (0-1)"
     )
+    
+    # ========== Disambiguation Fields ==========
+    aliases: List[str] = Field(
+        default_factory=list,
+        description="Alternative names, abbreviations, or nicknames for this entity"
+    )
+    canonical_name: Optional[str] = Field(
+        None,
+        description="Canonical/main entity name if this is an alias or variant (for entity resolution)"
+    )
+    confidence_score: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for entity resolution/disambiguation (0-1)"
+    )
+    # ==========================================
+    
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -60,10 +78,7 @@ class Person(GraphEntity):
         default_factory=list,
         description="Organizations or groups the person is affiliated with"
     )
-    aliases: List[str] = Field(
-        default_factory=list,
-        description="Alternative names or nicknames"
-    )
+    # Note: aliases inherited from GraphEntity base class
 
 
 class Organization(GraphEntity):
@@ -79,7 +94,7 @@ class Organization(GraphEntity):
         None,
         description="Parent organization if this is a subsidiary or department"
     )
-    aliases: List[str] = Field(default_factory=list, description="Alternative names or abbreviations")
+    # Note: aliases inherited from GraphEntity base class
 
 
 class Event(GraphEntity):

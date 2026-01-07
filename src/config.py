@@ -93,6 +93,16 @@ class Settings(BaseSettings):
         description="Number of top results after re-ranking to send to LLM",
     )
 
+    # Multi-Turn Conversation & Disambiguation Configuration
+    memory_window_size: int = Field(
+        default=10,
+        description="Number of conversation turns to keep in memory for context",
+    )
+    graph_expansion_depth: int = Field(
+        default=2,
+        description="Depth for query expansion in knowledge graph traversal",
+    )
+
     def __init__(self, **kwargs) -> None:
         """Initialize settings and ensure docs_dir exists."""
         super().__init__(**kwargs)
