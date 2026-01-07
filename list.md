@@ -1,0 +1,24 @@
+insgesamt 176
+-rw-r--r--. 1 gerrit gerrit  1131 30. Dez 15:40 compose.yaml
+-rw-r--r--. 1 gerrit gerrit   505 30. Dez 16:06 connection_test_output.txt
+drwxr-xr-x. 1 gerrit gerrit    84 30. Dez 16:10 data
+-rw-r--r--. 1 gerrit gerrit   239 30. Dez 17:15 debug_env.md
+-rw-r--r--. 1 gerrit gerrit   326 30. Dez 17:08 ingest_error.log
+-rw-r--r--. 1 gerrit gerrit  3344 30. Dez 16:17 INGESTION.md
+-rw-r--r--. 1 gerrit gerrit   326 30. Dez 16:14 ingestion_output.log
+-rw-r--r--. 1 gerrit gerrit   378 30. Dez 17:13 ingest.log
+-rw-r--r--. 1 gerrit gerrit   378 30. Dez 17:14 ingest_output.md
+-rw-r--r--. 1 gerrit gerrit 49308 30. Dez 17:16 install_debug.md
+-rw-r--r--. 1 gerrit gerrit 49308 30. Dez 17:16 install.log
+-rw-r--r--. 1 gerrit gerrit     0 30. Dez 17:17 list.md
+-rw-r--r--. 1 gerrit gerrit  1097 30. Dez 16:06 qdrant_verify_output.log
+-rw-r--r--. 1 gerrit gerrit  2893 30. Dez 15:24 README.md
+-rw-r--r--. 1 gerrit gerrit    94 30. Dez 17:05 requirements.txt
+-rwxr-xr-x. 1 gerrit gerrit  1266 30. Dez 16:16 run_ingestion.sh
+drwxr-xr-x. 1 gerrit gerrit   102 30. Dez 16:12 src
+-rw-r--r--. 1 gerrit gerrit  1260 30. Dez 16:06 test_connection.py
+-rw-r--r--. 1 gerrit gerrit     6 30. Dez 17:13 test.log
+drwxr-xr-x. 1 gerrit gerrit    76 30. Dez 16:03 venv
+-rw-r--r--. 1 gerrit gerrit  1954 30. Dez 16:07 VERIFICATION.md
+-rwxr-xr-x. 1 gerrit gerrit  1124 30. Dez 15:59 verify_qdrant.sh
+-rw-r--r--. 1 gerrit gerrit    24 30. Dez 17:14 visibility_check.md

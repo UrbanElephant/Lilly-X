@@ -4,10 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
-venv/
-venv_*/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -23,89 +19,52 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-pip-log.txt
-pip-delete-this-directory.txt
 
-# Environment Variables - CRITICAL: Contains sensitive data!
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# Environment files
 .env
 .env.local
 .env.production
+.env.development
 
 # IDEs
 .vscode/
 .idea/
 *.swp
-.swn
 *.swo
 *~
-.project
-.pydevproject
-
-# Data and Models (large files, not for version control)
-data/
-models/
-*.bin
-*.safetensors
-
-# Logs
-*.log
-logs/
-streamlit_launch.log
-
-# Temporary text outputs (keep requirements.txt and important docs)
-*.txt
-!requirements.txt
-
-# Temporary/Generated Markdown files
-debug_*.md
-install_*.md
-tail*.md
-python_*.md
-list.md
-ingest_*.md
-commit_output*.md
-git_*.md
-
-# Ingestion State (specific to local environment)
-ingestion_state.json
-
-# OS
 .DS_Store
-Thumbs.db
-*.bak
-*.swp
 
-# Podman/Container
-*.pid
-*.sock
+# Data directories (local PDFs/documents)
+data/docs/
+data/raw/
+data/processed/
 
-# Test outputs
-test_*.py
-*_test_output.txt
-
-# Qdrant data (managed via volumes, not repository)
-qdrant_data/
-qdrant_storage/
-
-# Neo4j data (managed via volumes, not repository)
-neo4j_data/
-neo4j_plugins/
-
-# Jupyter/IPython
-.ipynb_checkpoints
-*.ipynb
-
-# Coverage reports
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-neo4j_data/
-qdrant_storage/
-venv/
-__pycache__/
+# Runtime data
+feedback.json
+ingestion_state.json
 *.log
-.env
+
+# Model cache
+models/
+.cache/
+
+# Qdrant local storage
+qdrant_storage/
+
+# Neo4j data
+neo4j_data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Streamlit
+.streamlit/secrets.toml

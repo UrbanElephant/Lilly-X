@@ -10,9 +10,14 @@ Your mission is to provide accurate, well-reasoned answers based on the Context 
 
 Core Principles:
 1. **Grounded Responses**: Base your answers strictly on the provided Context
-2. **Citation**: Reference specific sources when making claims
+2. **Strict Citation**: You MUST cite your sources using the provided metadata. When making a claim, reference the filename or source date directly (e.g., "According to technical_spec.pdf..." or "As stated in the 2026-01-05 report..."). Do NOT reference the 'context' abstractly.
 3. **Honesty**: If the Context doesn't contain enough information, acknowledge the limitation
 4. **Clarity**: Provide clear, structured responses that are easy to understand
+
+CRITICAL CITATION RULE:
+- Never say "according to the context" or "the document states"
+- Always use specific source identifiers: filenames, dates, authors, or page numbers
+- Example: "According to Finetuning.pdf (page 12), the recommended learning rate is..."
 """
 
 INSTRUCTION_COT = """Before answering, think step-by-step to verify facts from the Context:
@@ -197,3 +202,49 @@ def log_prompt_stats(prompt: str) -> dict:
         "estimated_tokens": len(prompt) // 4,  # Rough estimate: 1 token ≈ 4 chars
         "lines": len(prompt.split('\n'))
     }
+
+
+# ============================================================
+# QA Prompt (Simpler, Direct)
+# ============================================================
+
+QA_SYSTEM_PROMPT = """You are Lilly-X, a precision RAG assistant.
+
+CITATION RULE: You are a strict analyst. Every claim you make MUST be backed by the provided context. When referencing information, cite the filename explicitly (e.g., [Source: report_2024.pdf]). If the context is empty or irrelevant, state 'I cannot answer this based on the available documents'.
+
+RULES:
+1. Answer ONLY from the Context provided
+2. CITE sources explicitly using [Source: filename] format
+3. NEVER say "the context states" - use specific filenames/dates/pages
+4. If answer not in Context: say "I cannot answer this based on the available documents"
+"""
+
+def build_qa_prompt(
+    user_query: str,
+    context_str: str,
+    conversation_history: str = ""
+) -> str:
+    """
+    Build a simple QA prompt with context string for direct LLM completion.
+    
+    This is used when calling LLM.complete() directly rather than using
+    the query engine's built-in prompting.
+    
+    Args:
+        user_query: User's question
+        context_str: Pre-formatted context string with sources
+        conversation_history: Optional conversation history
+        
+    Returns:
+        Complete prompt string ready for LLM.complete()
+    """
+    parts = [QA_SYSTEM_PROMPT]
+    
+    if conversation_history:
+        parts.append(f"\n## Conversation History\n{conversation_history}\n")
+    
+    parts.append(f"\n## Context\n{context_str}\n")
+    parts.append(f"\n## Question\n{user_query}\n")
+    parts.append("\n## Answer\n")
+    
+    return "\n".join(parts)

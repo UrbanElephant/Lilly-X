@@ -1,11 +1,34 @@
+# Core RAG Framework
 llama-index
 llama-index-vector-stores-qdrant
 llama-index-embeddings-huggingface
 llama-index-graph-stores-neo4j
-python-dotenv
 llama-index-llms-ollama
+
+# Configuration & Environment
+python-dotenv
+pydantic-settings
+
+# Vector & Graph Databases
+qdrant-client
+neo4j
+
+# Reranking & Embeddings
+sentence-transformers
+torch
+
+# Robust JSON Parsing
+json-repair
+
+# UI Framework
 streamlit
 watchdog
-torch
-neo4j
-pydantic-settings
+
+# Evaluation (Optional)
+# ragas  # Uncomment for advanced RAG evaluation metrics (requires additional dependencies)
+
+# Optional: For production deployments
+# datasets  # Required if using ragas
+sentence-transformers
+json-repair
+ragas

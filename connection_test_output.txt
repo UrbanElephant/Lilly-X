@@ -1,0 +1,18 @@
+============================================================
+LLIX - Quick Qdrant Connection Test
+============================================================
+
+Qdrant URL from config: http://127.0.0.1:6333
+Collection name: tech_books
+
+Connecting...
+✓ Connected successfully!
+
+Fetching collections...
+✓ Found 0 collection(s)
+
+============================================================
+✅ CONNECTION TEST PASSED!
+============================================================
+
+Ready for data ingestion!

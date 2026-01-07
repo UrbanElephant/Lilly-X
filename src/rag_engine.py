@@ -16,6 +16,7 @@ try:
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.core.schema import NodeWithScore
     from qdrant_client import QdrantClient
+    from sentence_transformers import CrossEncoder
 except ImportError:
     # Allow import for type checking/linting even if missing
     pass
@@ -49,6 +50,7 @@ class RAGEngine:
             
         self._index = None
         self._query_engine = None
+        self._reranker = None  # Lazy-loaded reranker model
         self._initialize()
         self._initialized = True
 
@@ -127,19 +129,31 @@ STRICT RULES:
             logger.error(f"Failed to connect to Qdrant/Index: {e}")
             raise
 
-    def query(self, query_text: str) -> RAGResponse:
-        """Execute a query and return response with sources."""
+    def query(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> RAGResponse:
+        """
+        Execute a query and return response with sources.
+        
+        Args:
+            query_text: Query string
+            top_k: Number of final results to return (defaults to settings.top_k_final)
+            use_reranker: Whether to use reranker for two-stage retrieval
+            
+        Returns:
+            RAGResponse with answer and source nodes
+        """
         if not self._query_engine:
             raise RuntimeError("RAG Engine not initialized.")
             
         logger.info(f"Querying: {query_text}")
         
-        # Get response
+        # Use retrieve for configurable retrieval, then query engine for response generation
+        # This is a simpler interface that uses the built-in query engine
+        # For more control, use retrieve() + custom prompting
         response_obj = self._query_engine.query(query_text)
         
         return RAGResponse(
             response=str(response_obj),
-            source_nodes=response_obj.source_nodes
+            source_nodes=response_obj.source_nodes[:top_k] if top_k else response_obj.source_nodes
         )
 
     def query_graph_store(self, query_text: str) -> str:
@@ -210,24 +224,79 @@ Key terms:"""
             logger.warning(f"Graph query error: {e}")
             return ""
 
-    def retrieve(self, query_text: str) -> Tuple[List[NodeWithScore], str]:
+    def _get_reranker(self):
+        """Lazy-load the reranker model (singleton pattern)."""
+        if self._reranker is None:
+            logger.info(f"Loading reranker model: {settings.reranker_model}")
+            try:
+                self._reranker = CrossEncoder(settings.reranker_model, max_length=512)
+                logger.info("Reranker model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load reranker model: {e}")
+                raise
+        return self._reranker
+
+    def retrieve(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> Tuple[List[NodeWithScore], str]:
         """
-        Hybrid retrieval: Retrieve from both vector store and graph database.
+        Hybrid retrieval with configurable reranking.
         
         Args:
             query_text: Query string
+            top_k: Number of final results to return (defaults to settings.top_k_final)
+            use_reranker: If True, use two-stage retrieval (broad -> rerank -> top-k)
+                         If False, use direct vector search with top_k results
             
         Returns:
-            Tuple of (vector_nodes, graph_context)
+            Tuple of (reranked_vector_nodes, graph_context)
         """
         if not self._index:
             raise RuntimeError("RAG Engine not initialized.")
         
-        # 1. Vector retrieval (existing)
-        retriever = self._index.as_retriever(similarity_top_k=settings.top_k)
-        vector_nodes = retriever.retrieve(query_text)
+        # Use config defaults if not specified
+        if top_k is None:
+            top_k = settings.top_k_final
         
-        # 2. Graph retrieval (new, with fallback)
+        if use_reranker:
+            # STAGE 1: Broad retrieval - fetch more candidates for reranking
+            candidates_count = top_k * 3  # Fetch 3x for better reranking pool
+            logger.info(f"Two-stage retrieval: Fetching {candidates_count} candidates for reranking to top {top_k}")
+            retriever = self._index.as_retriever(similarity_top_k=candidates_count)
+            candidate_nodes = retriever.retrieve(query_text)
+            
+            # STAGE 2: Rerank using CrossEncoder
+            if len(candidate_nodes) > top_k:
+                logger.info(f"Reranking {len(candidate_nodes)} candidates to top {top_k}")
+                try:
+                    reranker = self._get_reranker()
+                    
+                    # Create (query, document) pairs for reranking
+                    pairs = [(query_text, node.get_content()) for node in candidate_nodes]
+                    
+                    # Get reranking scores
+                    rerank_scores = reranker.predict(pairs)
+                    
+                    # Sort nodes by reranking score (descending)
+                    scored_nodes = list(zip(candidate_nodes, rerank_scores))
+                    scored_nodes.sort(key=lambda x: x[1], reverse=True)
+                    
+                    # Take top-K after reranking
+                    vector_nodes = [node for node, score in scored_nodes[:top_k]]
+                    
+                    logger.info(f"Reranking complete: selected top {len(vector_nodes)} documents")
+                except Exception as e:
+                    logger.warning(f"Reranking failed: {e}. Using original retrieval.")
+                    vector_nodes = candidate_nodes[:top_k]
+            else:
+                # Not enough candidates to rerank, use all retrieved
+                vector_nodes = candidate_nodes
+                logger.info(f"Retrieved {len(vector_nodes)} candidates (< top_k, skipping rerank)")
+        else:
+            # Direct vector search without reranking
+            logger.info(f"Direct retrieval: Fetching top {top_k} results (reranker disabled)")
+            retriever = self._index.as_retriever(similarity_top_k=top_k)
+            vector_nodes = retriever.retrieve(query_text)
+        
+        # Graph retrieval (with fallback)
         try:
             graph_context = self.query_graph_store(query_text)
         except Exception as e:

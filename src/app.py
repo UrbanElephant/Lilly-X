@@ -1,5 +1,8 @@
 import streamlit as st
 import time
+import json
+from pathlib import Path
+from datetime import datetime
 from uuid import uuid4, UUID
 from src.rag_engine import RAGEngine
 from src.config import settings
@@ -13,33 +16,57 @@ def format_metadata(metadata: dict) -> str:
     extras = []
     
     # --- Golden Source Header ---
-    # Display Type, Author, and Date prominently if available
     header_parts = []
-    if "document_type" in metadata:
+    if "document_type" in metadata and metadata['document_type'] != "Unknown":
         header_parts.append(f"📄 {metadata['document_type']}")
-    if "authors" in metadata and metadata['authors'] != "None":
+    if "authors" in metadata and metadata['authors'] not in ["None", "Unknown"]:
         header_parts.append(f"✍️ {metadata['authors']}")
     if "key_dates" in metadata and metadata['key_dates'] != "Unknown":
         header_parts.append(f"📅 {metadata['key_dates']}")
         
     if header_parts:
         extras.append(f"**{' | '.join(header_parts)}**")
-    # ----------------------------
-
-    # Format Questions
-    if "questions_this_excerpt_can_answer" in metadata:
-        q_str = metadata["questions_this_excerpt_can_answer"]
-        extras.append(f"**❓ Relevante Fragen:**\n{q_str}")
     
-    # Format Entities (Handle both potential key names from different extractors)
-    if "entities" in metadata:
-        e_str = metadata["entities"]
-        extras.append(f"**🏢 Entitäten:**\n{e_str}")
-    elif "excerpt_keywords" in metadata:
-        e_str = metadata["excerpt_keywords"]
-        extras.append(f"**🏢 Keywords:**\n{e_str}")
+    # Add page label if present
+    if "page_label" in metadata:
+        extras.append(f"**Page:** {metadata['page_label']}")
+    
+    # Add filename
+    if "file_name" in metadata:
+        extras.append(f"**File:** {metadata['file_name']}")
         
-    return "\n\n".join(extras)
+    return "\n".join(extras) if extras else ""
+
+
+def log_feedback(query: str, response: str, feedback_type: str):
+    """Log user feedback to feedback.json file."""
+    feedback_file = Path("feedback.json")
+    
+    feedback_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "query": query,
+        "response": response[:200],  # Truncate for storage
+        "feedback": feedback_type,
+        "session_id": str(st.session_state.session_id)
+    }
+    
+    # Load existing feedback
+    if feedback_file.exists():
+        try:
+            with open(feedback_file, 'r') as f:
+                feedback_data = json.load(f)
+        except:
+            feedback_data = []
+    else:
+        feedback_data = []
+    
+    # Append new feedback
+    feedback_data.append(feedback_entry)
+    
+    # Save
+    with open(feedback_file, 'w') as f:
+        json.dump(feedback_data, f, indent=2)
+
 
 # Page Config
 st.set_page_config(
@@ -75,30 +102,74 @@ except Exception as e:
 if "session_id" not in st.session_state:
     st.session_state.session_id = uuid4()
 
-# Sidebar
+# ========================================
+# SIDEBAR - THE COCKPIT
+# ========================================
 with st.sidebar:
     st.title("⚙️ Configuration")
     st.markdown("---")
-    st.success(f"**Model:** `{settings.llm_model}`")
-    st.info(f"**Embedding:** `{settings.embedding_model}`")
+    
+    # === Pipeline Settings Section ===
+    st.markdown("### 🔧 Pipeline Settings")
+    
+    # Top-K Slider
+    retrieval_count = st.slider(
+        "Retrieval Count (Top-K)",
+        min_value=1,
+        max_value=10,
+        value=5,
+        help="Number of documents to retrieve and show"
+    )
+    
+    # Reranker Toggle (using st.toggle for modern Streamlit)
+    try:
+        activate_reranker = st.toggle(
+            "Activate Reranker (Slow but precise)",
+            value=True,
+            help="Two-stage retrieval: broad search → CrossEncoder reranking → top results"
+        )
+    except AttributeError:
+        # Fallback for older Streamlit versions
+        activate_reranker = st.checkbox(
+            "Activate Reranker (Slow but precise)",
+            value=True,
+            help="Two-stage retrieval: broad search → CrossEncoder reranking → top results"
+        )
+    
+    # Visual feedback
+    if activate_reranker:
+        st.caption(f"✨ Mode: Two-stage ({retrieval_count * 3} → rerank → {retrieval_count})")
+    else:
+        st.caption(f"⚡ Mode: Direct vector search ({retrieval_count} results)")
+    
     st.markdown("---")
-    st.markdown("### Hybrid GraphRAG Status")
+    # === END Pipeline Settings ===
+    
+    # Model Info
+    st.markdown("### 🤖 Models")
+    st.success(f"**LLM:** `{settings.llm_model}`")
+    st.info(f"**Embeddings:** `{settings.embedding_model}`")
+    if activate_reranker:
+        st.info(f"**Reranker:** `{settings.reranker_model}`")
+    
+    st.markdown("---")
+    st.markdown("### 📊 System Status")
     st.write("✅ RAG Engine Ready")
     st.write("✅ Qdrant (Vector Store)")
-    st.write("✅ Memory Manager (Persistent)")
+    st.write("✅ Memory Manager")
     
     # Check if Neo4j is available
     if hasattr(engine, '_neo4j_driver') and engine._neo4j_driver:
         st.write("✅ Neo4j (Knowledge Graph)")
-        st.write("✅ Graph Operations Ready")
     else:
         st.write("⚠️ Neo4j (Disabled)")
     
     st.markdown("---")
-    st.caption(f"Session ID: `{str(st.session_state.session_id)[:8]}...`")
-    st.caption(f"Memory Window: {settings.memory_window_size} turns")
+    st.caption(f"Session: `{str(st.session_state.session_id)[:8]}...`")
 
-# Main Interface
+# ========================================
+# MAIN INTERFACE
+# ========================================
 st.title("Lilly-X - Local Knowledge Base 🧠")
 st.markdown("Ask questions about your ingested documents.")
 
@@ -107,25 +178,72 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Display Chat History
-for message in st.session_state.messages:
+for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        # If it was an assistant message and had sources, show them
-        if message["role"] == "assistant" and "sources" in message:
-            with st.expander("📚 View Sources"):
-                st.caption(f"Showing Top 5 results from Re-Ranker (Cross-Encoder)")
-                for src in message["sources"]:
-                    st.markdown(f"**{src['source']}** (Re-Rank Confidence: {src['score']:.2f}) 🎯")
-                    st.caption(src['content'])
-                    # Display metadata if present
-                    meta_text = format_metadata(src.get('metadata', {}))
-                    if meta_text:
-                        st.info(meta_text)
+        
+        # If assistant message, show sources and feedback
+        if message["role"] == "assistant":
+            # Sources
+            if "sources" in message and message["sources"]:
+                with st.expander("📚 Sources & Evidence"):
+                    mode_used = "Two-Stage Reranker" if message.get("used_reranker") else "Direct Vector Search"
+                    st.caption(f"**Retrieval Mode:** {mode_used}")
+                    st.caption(f"**Documents Retrieved:** {len(message['sources'])}")
                     st.markdown("---")
+                    
+                    for src_idx, src in enumerate(message["sources"], 1):
+                        st.markdown(f"**Source {src_idx}: {src['source']}**")
+                        
+                        # Score Display
+                        score = src.get('score', 0.0)
+                        score_label = "🎯 Rerank Score" if message.get("used_reranker") else "🔍 Vector Similarity"
+                        
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.metric(label=score_label, value=f"{score:.4f}")
+                        with col2:
+                            # Metadata
+                            meta_text = format_metadata(src.get('metadata', {}))
+                            if meta_text:
+                                st.markdown(meta_text)
+                        
+                        # Content Snippet (first 200 chars)
+                        st.caption("**Content Snippet:**")
+                        snippet = src['content'][:200]
+                        st.text(snippet + ("..." if len(src['content']) > 200 else ""))
+                        
+                        st.markdown("---")
+            
+            # Feedback buttons
+            if "feedback" not in message:
+                col1, col2, col3 = st.columns([1, 1, 10])
+                with col1:
+                    if st.button("👍", key=f"up_{idx}"):
+                        log_feedback(
+                            st.session_state.messages[idx-1]["content"],
+                            message["content"],
+                            "positive"
+                        )
+                        st.session_state.messages[idx]["feedback"] = "positive"
+                        st.success("Thanks!")
+                        st.rerun()
+                with col2:
+                    if st.button("👎", key=f"down_{idx}"):
+                        log_feedback(
+                            st.session_state.messages[idx-1]["content"],
+                            message["content"],
+                            "negative"
+                        )
+                        st.session_state.messages[idx]["feedback"] = "negative"
+                        st.warning("Noted!")
+                        st.rerun()
+            else:
+                st.caption(f"✓ Feedback: {message['feedback']}")
 
 # Chat Input
 if prompt := st.chat_input("What would you like to know?"):
-    # Add User Message to History
+    # Add User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -133,118 +251,135 @@ if prompt := st.chat_input("What would you like to know?"):
     # Generate Response
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
         
         try:
             with st.spinner("🔍 Processing query..."):
-                # ===== STEP A: Get Conversation Session =====
+                # === Memory & Graph Context ===
                 session = memory_mgr.get_history(st.session_state.session_id)
                 conversation_history = session.to_string(max_turns=settings.memory_window_size)
                 
-                # ===== STEP B: Resolve Entities via Graph =====
-                # Simple entity extraction (just capitalized words for now)
-                # TODO: Use proper NER or LLM-based extraction
+                # === Entity Resolution ===
                 words = prompt.split()
-                potential_entities = [w.strip('.,!?') for w in words if w[0].isupper() and len(w) > 1]
-                
+                potential_entities = [w.strip('.,!?') for w in words if w and w[0].isupper() and len(w) > 1]
                 resolved_entities = []
-                for entity in potential_entities[:3]:  # Limit to top 3 for performance
+                for entity in potential_entities[:3]:
                     canonical = graph_ops.resolve_entity(entity)
-                    if canonical != entity:
-                        resolved_entities.append(f"{entity} → {canonical}")
-                    else:
-                        resolved_entities.append(entity)
+                    resolved_entities.append(canonical)
                 
-                # ===== STEP C: Expand Graph Context =====
-                graph_context_relationships = []
-                if resolved_entities and hasattr(engine, '_neo4j_driver') and engine._neo4j_driver:
-                    for entity in resolved_entities[:2]:  # Top 2 entities
-                        entity_name = entity.split(' → ')[-1]  # Get canonical name
-                        try:
-                            related = graph_ops.expand_query(entity_name, depth=1)
-                            if len(related) > 1:
-                                graph_context_relationships.append(
-                                    f"'{entity_name}' is related to: {', '.join(related[1:4])}"
-                                )
-                        except Exception:
-                            pass  # Entity not in graph, continue
-                
-                # ===== Standard Vector Retrieval =====
-                result = engine.query(prompt)
-                full_response = result.response
-                
-                # ===== STEP D: Build Enhanced Prompt (for logging/future use) =====
-                # Note: Current engine.query doesn't use this yet, but we log it
-                vector_sources = []
-                if result.source_nodes:
-                    for node in result.source_nodes:
-                        vector_sources.append({
-                            'content': node.node.get_content()[:500],
-                            'metadata': node.node.metadata,
-                            'score': node.score
-                        })
-                
-                # Build full prompt for debugging
-                full_prompt = prompts.build_prompt(
-                    user_query=prompt,
-                    conversation_history=conversation_history,
-                    graph_context_entities=resolved_entities,
-                    graph_context_relationships=graph_context_relationships,
-                    vector_sources=vector_sources,
-                    use_cot=True
+                # === Hybrid Retrieval with User Config ===
+                # CRITICAL: Pass sidebar values to engine
+                vector_nodes, graph_context = engine.retrieve(
+                    query_text=prompt,
+                    top_k=retrieval_count,          # From slider
+                    use_reranker=activate_reranker  # From toggle
                 )
                 
-                # Log prompt stats for debugging
-                prompt_stats = prompts.log_prompt_stats(full_prompt)
+                # Build context string with source identifiers
+                context_parts = []
+                if graph_context:
+                    context_parts.append(graph_context)
                 
-                # ===== Display Response =====
+                for idx, node in enumerate(vector_nodes, 1):
+                    meta = node.node.metadata
+                    filename = meta.get('file_name', 'Unknown')
+                    content = node.node.get_content()
+                    # Format with [Source: filename] for citation enforcement
+                    context_parts.append(f"[Source: {filename}]\n{content}\n")
+                
+                context_str = "\n\n".join(context_parts)
+                
+                # === Generate Response with Strict Citation Prompt ===
+                final_prompt = prompts.build_qa_prompt(
+                    user_query=prompt,
+                    context_str=context_str,
+                    conversation_history=conversation_history
+                )
+                
+                # Call LLM directly
+                from llama_index.core import Settings as LlamaSettings
+                response = LlamaSettings.llm.complete(final_prompt)
+                full_response = str(response)
+                
+                # Display
                 message_placeholder.markdown(full_response)
                 
-                # ===== Show Thinking Process (Debug Info) =====
-                with st.expander("🧠 Thinking Process (Debug)"):
-                    st.caption("**Context Retrieval Process**")
+                # === Debug Info ===
+                with st.expander("🧠 Retrieval Details"):
+                    st.write(f"**Mode:** {'Two-Stage Reranker' if activate_reranker else 'Direct Vector'}")
+                    st.write(f"**Retrieved:** {len(vector_nodes)} documents")
+                    st.write(f"**Top-K Setting:** {retrieval_count}")
                     if conversation_history:
-                        st.write(f"📝 Loaded {len(session.messages)} messages from history")
+                        st.write(f"**Memory:** {len(session.messages)} turns loaded")
                     if resolved_entities:
-                        st.write(f"🔍 Resolved entities: {', '.join(resolved_entities)}")
-                    if graph_context_relationships:
-                        st.write("🕸️ Graph context:")
-                        for rel in graph_context_relationships:
-                            st.caption(f"  - {rel}")
-                    st.write(f"📊 Prompt stats: {prompt_stats['estimated_tokens']} tokens (est.)")
+                        st.write(f"**Entities:** {', '.join(resolved_entities[:3])}")
                 
-                # Prepare source data for history
+                # === Prepare sources for history ===
                 source_data = []
-                if result.source_nodes:
-                    with st.expander("📚 View Sources"):
-                        st.caption(f"Showing Top 5 results from Re-Ranker (Cross-Encoder)")
-                        for node in result.source_nodes:
-                            meta = node.node.metadata
-                            meta_output = format_metadata(meta)
-                            
-                            src_info = {
-                                "source": meta.get('file_name', 'Unknown'),
-                                "content": node.node.get_content().replace('\n', ' ')[:300] + "...",
-                                "score": node.score,
-                                "metadata": meta
-                            }
-                            source_data.append(src_info)
-                            st.markdown(f"**{src_info['source']}** (Re-Rank Confidence: {src_info['score']:.2f}) 🎯")
-                            st.caption(src_info['content'])
-                            if meta_output:
-                                st.info(meta_output)
-                            st.markdown("---")
+                with st.expander("📚 Sources & Evidence"):
+                    mode_used = "Two-Stage Reranker" if activate_reranker else "Direct Vector Search"
+                    st.caption(f"**Retrieval Mode:** {mode_used}")
+                    st.caption(f"**Documents Retrieved:** {len(vector_nodes)}")
+                    st.markdown("---")
+                    
+                    for src_idx, node in enumerate(vector_nodes, 1):
+                        meta = node.node.metadata
+                        
+                        src_info = {
+                            "source": meta.get('file_name', 'Unknown'),
+                            "content": node.node.get_content()[:200],
+                            "score": node.score,
+                            "metadata": meta
+                        }
+                        source_data.append(src_info)
+                        
+                        st.markdown(f"**Source {src_idx}: {src_info['source']}**")
+                        
+                        # Score Display
+                        score_label = "🎯 Rerank Score" if activate_reranker else "🔍 Vector Similarity"
+                        
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.metric(label=score_label, value=f"{src_info['score']:.4f}")
+                        with col2:
+                            meta_text = format_metadata(meta)
+                            if meta_text:
+                                st.markdown(meta_text)
+                        
+                        # Content Snippet
+                        st.caption("**Content Snippet:**")
+                        st.text(src_info['content'] + "...")
+                        
+                        st.markdown("---")
             
-            # ===== STEP F & G: Save to Memory =====
+            # === Save to Memory ===
             memory_mgr.add_message(st.session_state.session_id, "user", prompt)
             memory_mgr.add_message(st.session_state.session_id, "assistant", full_response)
             
-            # Add Assistant Message to History (Streamlit UI)
+            # === Add to UI History ===
             st.session_state.messages.append({
-                "role": "assistant", 
+                "role": "assistant",
                 "content": full_response,
-                "sources": source_data
+                "sources": source_data,
+                "used_reranker": activate_reranker
             })
+            
+            # === Feedback Buttons ===
+            st.markdown("---")
+            st.caption("**Was this helpful?**")
+            col1, col2, col3 = st.columns([1, 1, 10])
+            
+            with col1:
+                if st.button("👍", key="thumbs_up_current"):
+                    log_feedback(prompt, full_response, "positive")
+                    st.success("Thanks!")
+            
+            with col2:
+                if st.button("👎", key="thumbs_down_current"):
+                    log_feedback(prompt, full_response, "negative")
+                    st.warning("Noted!")
             
         except Exception as e:
             st.error(f"Error generating response: {e}")
+            import traceback
+            with st.expander("Error Details"):
+                st.code(traceback.format_exc())

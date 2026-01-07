@@ -101,22 +101,123 @@ class IngestionState:
 # =====================================================
 
 class StructuredMetadataExtractor(BaseExtractor):
+    """
+    Extracts structured metadata from documents with robust JSON parsing.
+    
+    Uses json_repair to handle malformed JSON and implements retry logic
+    before falling back to default values.
+    """
     llm: object = LlamaField(description="LLM")
     
     def __init__(self, llm, **kwargs):
         super().__init__(llm=llm, **kwargs)
         
     async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
+        """Extract metadata from nodes with robust JSON parsing."""
+        from json_repair import repair_json
+        
         metadata_list = []
         for node in nodes:
             content = node.get_content(metadata_mode="all")[:2000]
-            prompt = f"Extract metadata (document_type, authors, key_dates) as JSON from:\n{content}"
+            
+            # Get the Pydantic schema for correction prompts
+            schema_json = DocumentMetadata.model_json_schema()
+            
+            # First attempt
+            prompt = f"""Extract metadata from the following text and return ONLY valid JSON matching this schema:
+{json.dumps(schema_json, indent=2)}
+
+Respond with ONLY the JSON object, no explanatory text.
+
+Text:
+{content}
+
+JSON:"""
+            
             try:
                 response = await self.llm.acomplete(prompt)
-                metadata_list.append(DocumentMetadata().model_dump())
-            except Exception:
-                metadata_list.append(DocumentMetadata().model_dump())
+                response_text = str(response).strip()
+                
+                # Try parsing the response
+                metadata = self._parse_metadata_response(response_text, repair_json)
+                
+                if metadata:
+                    logger.info(f"Metadata extracted successfully on first attempt")
+                    metadata_list.append(metadata.model_dump())
+                    continue
+                    
+            except Exception as e:
+                logger.warning(f"First metadata extraction attempt failed: {e}")
+            
+            # Second attempt with correction prompt
+            try:
+                correction_prompt = f"""The previous response was malformed. Please provide valid JSON matching this exact schema:
+
+{json.dumps(schema_json, indent=2)}
+
+CRITICAL: Return ONLY the JSON object with no additional text or markdown formatting.
+
+Text to analyze:
+{content}
+
+Valid JSON:"""
+                
+                response = await self.llm.acomplete(correction_prompt)
+                response_text = str(response).strip()
+                
+                metadata = self._parse_metadata_response(response_text, repair_json)
+                
+                if metadata:
+                    logger.info(f"Metadata extracted successfully on retry")
+                    metadata_list.append(metadata.model_dump())
+                    continue
+                    
+            except Exception as e:
+                logger.warning(f"Retry metadata extraction failed: {e}")
+            
+            # Final fallback to defaults
+            logger.error(f"All metadata extraction attempts failed, using defaults")
+            metadata_list.append(DocumentMetadata().model_dump())
+        
         return metadata_list
+    
+    def _parse_metadata_response(self, response_text: str, repair_json) -> Optional[DocumentMetadata]:
+        """
+        Attempt to parse metadata from LLM response with JSON repair.
+        
+        Args:
+            response_text: Raw LLM response
+            repair_json: json_repair function
+            
+        Returns:
+            DocumentMetadata object or None if parsing fails
+        """
+        try:
+            # Clean common markdown formatting
+            response_text = response_text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            # Try direct JSON parsing
+            try:
+                data = json.loads(response_text)
+                return DocumentMetadata(**data)
+            except json.JSONDecodeError:
+                # Use json_repair for malformed JSON
+                logger.info("Direct JSON parse failed, attempting repair")
+                repaired = repair_json(response_text)
+                data = json.loads(repaired)
+                return DocumentMetadata(**data)
+                
+        except Exception as e:
+            logger.debug(f"Metadata parsing failed: {e}")
+            logger.debug(f"Raw response: {response_text[:200]}")
+            return None
 
 class GraphExtractor(BaseExtractor):
     """

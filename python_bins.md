@@ -1,0 +1,12 @@
+/usr/bin/python
+/usr/bin/python3
+/usr/bin/python3.10
+/usr/bin/python3.10-config
+/usr/bin/python3.10-x86_64-config
+/usr/bin/python3.12
+/usr/bin/python3.14
+/usr/bin/python3.14-config
+/usr/bin/python3.14-x86_64-config
+/usr/bin/python3-config
+/usr/bin/python-argcomplete-check-easy-install-script
+/usr/bin/python-config
