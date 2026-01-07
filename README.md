@@ -161,7 +161,7 @@ bash start_all.sh
 
 **Access Points:**
 - **UI**: http://localhost:8501
-- **Neo4j Browser**: http://localhost:7474 (user: `neo4j`, password: `password`)
+- **Neo4j Browser**: http://localhost:7474 (user: `neo4j`, ***: `***`)
 - **Qdrant API**: http://localhost:6333
 
 ### 2. Activate Python Environment
@@ -256,7 +256,7 @@ QDRANT_COLLECTION=tech_books
 # Graph Database
 NEO4J_URL=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
+NEO4J_PASSWORD=***
 
 # LLM & Embeddings
 OLLAMA_BASE_URL=http://localhost:11434
