@@ -1,7 +1,7 @@
 """Central configuration management using pydantic-settings."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -101,6 +101,24 @@ class Settings(BaseSettings):
     graph_expansion_depth: int = Field(
         default=2,
         description="Depth for query expansion in knowledge graph traversal",
+    )
+
+    # Advanced Retrieval Strategy Configuration
+    retrieval_strategy: Literal["semantic", "sentence_window", "hierarchical"] = Field(
+        default="semantic",
+        description="Retrieval strategy for chunking: semantic, sentence_window, or hierarchical",
+    )
+    sentence_window_size: int = Field(
+        default=3,
+        description="Window size for sentence window retrieval (number of sentences before/after)",
+    )
+    parent_chunk_size: int = Field(
+        default=1024,
+        description="Parent chunk size for hierarchical chunking (in tokens)",
+    )
+    child_chunk_size: int = Field(
+        default=256,
+        description="Child chunk size for hierarchical chunking (in tokens)",
     )
 
     def __init__(self, **kwargs) -> None:

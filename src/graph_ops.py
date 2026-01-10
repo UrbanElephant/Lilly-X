@@ -1,11 +1,15 @@
 """Graph operations for entity resolution and query expansion in Lilly-X."""
 
+import logging
+import re
 from typing import List, Optional, Dict, Any
 
 from neo4j import Driver
 
 from src.config import settings
 from src.graph_database import get_neo4j_driver
+
+logger = logging.getLogger(__name__)
 
 
 class GraphOperations:
@@ -239,6 +243,126 @@ class GraphOperations:
             if record:
                 return record["path_nodes"]
             return None
+    
+    def get_entity_context(self, query: str, limit: int = 10) -> List[str]:
+        """
+        Retrieves context from Neo4j based on entities found in the query.
+        
+        This method extracts potential entities from the query using heuristics,
+        then queries the graph database for 1-hop relationships involving those entities.
+        
+        Args:
+            query: User query text to extract entities from
+            limit: Maximum number of graph facts to return
+            
+        Returns:
+            List of natural language facts describing entity relationships
+        """
+        if not self._driver:
+            logger.warning("🚫 No Neo4j connection. Skipping GraphRAG.")
+            return []
+
+        # 1. Extract potential entities (Simple heuristics + fallback)
+        entities = self._extract_entities_heuristic(query)
+        
+        if not entities:
+            logger.debug("No entities extracted from query for graph retrieval")
+            return []
+
+        logger.info(f"🕸️ Querying Graph for entities: {entities}")
+        facts = []
+
+        try:
+            # 2. Cypher Query: Find entities and their immediate 1-hop relationships
+            # We look for nodes where the name contains the search term (case-insensitive)
+            cypher_query = """
+            UNWIND $entities AS term
+            MATCH (e)-[r]->(target)
+            WHERE toLower(e.name) CONTAINS toLower(term)
+            RETURN e.name AS source, 
+                   type(r) AS rel, 
+                   target.name AS target, 
+                   labels(e)[0] AS source_type,
+                   labels(target)[0] AS target_type
+            LIMIT $limit
+            """
+            
+            with self._driver.session() as session:
+                result = session.run(
+                    cypher_query, 
+                    entities=entities, 
+                    limit=limit
+                )
+
+                for record in result:
+                    # Format: "Entity (Type) RELATION Target (Type)"
+                    source = record.get('source', 'Unknown')
+                    source_type = record.get('source_type', '')
+                    rel = record.get('rel', 'RELATED_TO')
+                    target = record.get('target', 'Unknown')
+                    target_type = record.get('target_type', '')
+                    
+                    if source_type and target_type:
+                        fact = f"{source} ({source_type}) {rel} {target} ({target_type})"
+                    else:
+                        fact = f"{source} {rel} {target}"
+                    
+                    facts.append(fact)
+
+            if facts:
+                logger.info(f"✅ Retrieved {len(facts)} graph facts.")
+            else:
+                logger.debug("No graph facts found for extracted entities")
+            
+        except Exception as e:
+            logger.error(f"❌ Graph retrieval failed: {e}")
+            
+        return facts
+
+    def _extract_entities_heuristic(self, text: str) -> List[str]:
+        """
+        Extracts potential named entities using basic NLP heuristics.
+        
+        Uses capitalized words as a simple Named Entity Recognition (NER) approach
+        to avoid heavy dependencies while still providing reasonable entity extraction.
+        
+        Args:
+            text: Text to extract entities from
+            
+        Returns:
+            List of potential entity names
+        """
+        # 1. Look for capitalized words (simple NER)
+        capitalized = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', text)
+        
+        # 2. Filter out common stop words and question words
+        ignore = {
+            'Who', 'What', 'Where', 'When', 'Why', 'How', 
+            'Is', 'Are', 'Was', 'Were', 'The', 'A', 'An', 
+            'In', 'On', 'For', 'To', 'Of', 'At', 'By', 'From',
+            'Do', 'Does', 'Did', 'Can', 'Could', 'Should', 'Would',
+            'Tell', 'Me', 'About', 'Explain', 'Describe'
+        }
+        entities = [w for w in capitalized if w not in ignore]
+        
+        # 3. Fallback: If query is short and no capitalized words, use key terms
+        if not entities and len(text.split()) < 5:
+            # Simple fallback for short queries like "python" or "neo4j"
+            words = text.split()
+            entities = [
+                w for w in words 
+                if len(w) > 3 and w.lower() not in {i.lower() for i in ignore}
+            ]
+        
+        # 4. Remove duplicates while preserving order
+        seen = set()
+        unique_entities = []
+        for entity in entities:
+            if entity.lower() not in seen:
+                seen.add(entity.lower())
+                unique_entities.append(entity)
+        
+        return unique_entities
 
 
 # ============================================================

@@ -1,6 +1,6 @@
 """
 Core RAG Engine logic.
-Encapsulates LlamaIndex setup and querying.
+Encapsulates LlamaIndex setup and querying with support for multiple retrieval strategies.
 """
 
 import logging
@@ -15,6 +15,9 @@ try:
     from llama_index.llms.ollama import Ollama
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     from llama_index.core.schema import NodeWithScore
+    from llama_index.core.postprocessor import MetadataReplacementPostProcessor
+    from llama_index.core.retrievers import AutoMergingRetriever
+    from llama_index.core.query_engine import RetrieverQueryEngine
     from qdrant_client import QdrantClient
     from sentence_transformers import CrossEncoder
 except ImportError:
@@ -34,7 +37,7 @@ class RAGResponse:
 
 
 class RAGEngine:
-    """Singleton-style class to handle RAG operations."""
+    """Singleton-style class to handle RAG operations with multiple retrieval strategies."""
     
     _instance = None
     
@@ -51,6 +54,7 @@ class RAGEngine:
         self._index = None
         self._query_engine = None
         self._reranker = None  # Lazy-loaded reranker model
+        self._storage_context = None  # Needed for hierarchical retrieval
         self._initialize()
         self._initialized = True
 
@@ -110,24 +114,98 @@ STRICT RULES:
                 client=client, 
                 collection_name=settings.qdrant_collection
             )
-            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            self._storage_context = StorageContext.from_defaults(vector_store=vector_store)
             
             self._index = VectorStoreIndex.from_vector_store(
                 vector_store,
-                storage_context=storage_context,
+                storage_context=self._storage_context,
             )
             
-            # Configure query engine for vector retrieval
-            logger.info(f"Vector retrieval configured: top_k={settings.top_k}")
-            self._query_engine = self._index.as_query_engine(
-                similarity_top_k=settings.top_k
-            )
+            # Configure query engine based on retrieval strategy
+            self._query_engine = self._create_query_engine()
             
-            logger.info("RAG Engine initialized successfully.")
+            logger.info(f"RAG Engine initialized successfully with '{settings.retrieval_strategy}' strategy.")
             
         except Exception as e:
             logger.error(f"Failed to connect to Qdrant/Index: {e}")
             raise
+
+    def _create_query_engine(self):
+        """
+        Create a query engine based on the configured retrieval strategy.
+        
+        Returns:
+            Configured query engine instance
+        """
+        strategy = settings.retrieval_strategy
+        logger.info(f"Creating query engine with strategy: {strategy}")
+        
+        # Build node postprocessors list
+        node_postprocessors = []
+        
+        if strategy == "semantic":
+            # Standard semantic search - no special postprocessors needed
+            logger.info("Using standard semantic retrieval")
+            return self._index.as_query_engine(
+                similarity_top_k=settings.top_k,
+                node_postprocessors=node_postprocessors
+            )
+        
+        elif strategy == "sentence_window":
+            # Sentence Window: Replace sentence nodes with their surrounding context window
+            logger.info(f"Using sentence window retrieval (window_size={settings.sentence_window_size})")
+            
+            # Add metadata replacement postprocessor BEFORE any other processing
+            # This expands the sentence to its full window context
+            try:
+                window_postprocessor = MetadataReplacementPostProcessor(
+                    target_metadata_key="window"
+                )
+                node_postprocessors.append(window_postprocessor)
+                logger.info("MetadataReplacementPostProcessor configured for sentence window")
+            except Exception as e:
+                logger.error(f"Failed to initialize MetadataReplacementPostProcessor: {e}")
+                logger.warning("Falling back to standard retrieval without window replacement")
+            
+            return self._index.as_query_engine(
+                similarity_top_k=settings.top_k,
+                node_postprocessors=node_postprocessors
+            )
+        
+        elif strategy == "hierarchical":
+            # Hierarchical: Use AutoMergingRetriever to merge child chunks into parents
+            logger.info(f"Using hierarchical retrieval (parent={settings.parent_chunk_size}, child={settings.child_chunk_size})")
+            
+            try:
+                # Create base retriever
+                base_retriever = self._index.as_retriever(
+                    similarity_top_k=settings.top_k
+                )
+                
+                # Wrap with AutoMergingRetriever
+                retriever = AutoMergingRetriever(
+                    base_retriever,
+                    self._storage_context,
+                    verbose=True
+                )
+                
+                # Create query engine from the auto-merging retriever
+                query_engine = RetrieverQueryEngine.from_args(
+                    retriever=retriever,
+                    node_postprocessors=node_postprocessors
+                )
+                
+                logger.info("AutoMergingRetriever configured successfully")
+                return query_engine
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize AutoMergingRetriever: {e}")
+                logger.warning("Falling back to standard semantic retrieval")
+                return self._index.as_query_engine(similarity_top_k=settings.top_k)
+        
+        else:
+            logger.warning(f"Unknown retrieval strategy '{strategy}', using semantic fallback")
+            return self._index.as_query_engine(similarity_top_k=settings.top_k)
 
     def query(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> RAGResponse:
         """
@@ -144,17 +222,42 @@ STRICT RULES:
         if not self._query_engine:
             raise RuntimeError("RAG Engine not initialized.")
             
-        logger.info(f"Querying: {query_text}")
+        logger.info(f"Querying with '{settings.retrieval_strategy}' strategy: {query_text}")
         
-        # Use retrieve for configurable retrieval, then query engine for response generation
-        # This is a simpler interface that uses the built-in query engine
-        # For more control, use retrieve() + custom prompting
-        response_obj = self._query_engine.query(query_text)
-        
-        return RAGResponse(
-            response=str(response_obj),
-            source_nodes=response_obj.source_nodes[:top_k] if top_k else response_obj.source_nodes
-        )
+        # For hierarchical and sentence_window strategies, the query engine handles the special logic
+        # For reranking integration, we use the retrieve() method instead
+        if use_reranker and settings.retrieval_strategy == "semantic":
+            # Use custom retrieve + rerank flow for semantic strategy
+            vector_nodes, graph_context = self.retrieve(query_text, top_k=top_k, use_reranker=True)
+            
+            # Generate response using LLM with retrieved context
+            context_str = "\n\n".join([node.get_content() for node in vector_nodes])
+            if graph_context:
+                context_str = f"{graph_context}\n\n{context_str}"
+            
+            prompt = f"""Based on the following context, answer the question.
+
+Context:
+{context_str}
+
+Question: {query_text}
+
+Answer:"""
+            
+            response_text = str(Settings.llm.complete(prompt))
+            
+            return RAGResponse(
+                response=response_text,
+                source_nodes=vector_nodes[:top_k] if top_k else vector_nodes
+            )
+        else:
+            # Use the query engine directly (handles sentence_window and hierarchical internally)
+            response_obj = self._query_engine.query(query_text)
+            
+            return RAGResponse(
+                response=str(response_obj),
+                source_nodes=response_obj.source_nodes[:top_k] if top_k else response_obj.source_nodes
+            )
 
     def query_graph_store(self, query_text: str) -> str:
         """
@@ -171,54 +274,25 @@ STRICT RULES:
             return ""
         
         try:
-            # Extract key entities from query using LLM
-            extract_prompt = f"""Extract the key entities, topics, or concepts from this query.
-Return only a comma-separated list of 2-4 key terms, nothing else.
-
-Query: {query_text}
-
-Key terms:"""
+            # Import GraphOperations for entity context retrieval
+            from src.graph_ops import GraphOperations
             
-            response = Settings.llm.complete(extract_prompt)
-            keywords = str(response).strip().split(",")
-            keywords = [k.strip().lower() for k in keywords if k.strip()]
+            graph_ops = GraphOperations(driver=self._neo4j_driver)
             
-            if not keywords:
-                logger.debug("No keywords extracted from query")
+            # Get entity context using heuristic extraction
+            facts = graph_ops.get_entity_context(query_text, limit=15)
+            
+            if not facts:
+                logger.debug("No graph facts found for query")
                 return ""
             
-            logger.info(f"Graph query keywords: {keywords[:3]}")
+            # Format results as context
+            context_lines = ["\n=== Related Knowledge Graph Information ==="]
+            for fact in facts:
+                context_lines.append(f"- {fact}")
             
-            # Query Neo4j for related entities and relationships
-            with self._neo4j_driver.session() as session:
-                # Build Cypher query to find related nodes
-                cypher_query = """
-                MATCH (n)-[r]->(m)
-                WHERE toLower(n.name) CONTAINS $keyword
-                RETURN n.name AS source, type(r) AS relationship, m.name AS target, 
-                       n.entity_type AS source_type, m.entity_type AS target_type
-                LIMIT 20
-                """
-                
-                all_results = []
-                for keyword in keywords[:3]:  # Limit to first 3 keywords
-                    result = session.run(cypher_query, keyword=keyword)
-                    all_results.extend(list(result))
-                
-                if not all_results:
-                    logger.debug("No graph results found")
-                    return ""
-                
-                # Format results as context
-                context_lines = ["\n=== Related Knowledge Graph Information ==="]
-                for record in all_results[:15]:  # Limit to 15 relationships
-                    source = record.get("source", "Unknown")
-                    rel = record.get("relationship", "RELATED_TO")
-                    target = record.get("target", "Unknown")
-                    context_lines.append(f"- {source} {rel} {target}")
-                
-                context_lines.append("="*45)
-                return "\n".join(context_lines)
+            context_lines.append("="*45)
+            return "\n".join(context_lines)
                 
         except Exception as e:
             logger.warning(f"Graph query error: {e}")
@@ -238,7 +312,10 @@ Key terms:"""
 
     def retrieve(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> Tuple[List[NodeWithScore], str]:
         """
-        Hybrid retrieval with configurable reranking.
+        Hybrid retrieval with configurable reranking and strategy-aware processing.
+        
+        Note: For sentence_window and hierarchical strategies, use the query() method instead
+        as it handles the special postprocessing automatically.
         
         Args:
             query_text: Query string
@@ -256,45 +333,56 @@ Key terms:"""
         if top_k is None:
             top_k = settings.top_k_final
         
-        if use_reranker:
-            # STAGE 1: Broad retrieval - fetch more candidates for reranking
-            candidates_count = top_k * 3  # Fetch 3x for better reranking pool
-            logger.info(f"Two-stage retrieval: Fetching {candidates_count} candidates for reranking to top {top_k}")
-            retriever = self._index.as_retriever(similarity_top_k=candidates_count)
-            candidate_nodes = retriever.retrieve(query_text)
-            
-            # STAGE 2: Rerank using CrossEncoder
-            if len(candidate_nodes) > top_k:
-                logger.info(f"Reranking {len(candidate_nodes)} candidates to top {top_k}")
-                try:
-                    reranker = self._get_reranker()
-                    
-                    # Create (query, document) pairs for reranking
-                    pairs = [(query_text, node.get_content()) for node in candidate_nodes]
-                    
-                    # Get reranking scores
-                    rerank_scores = reranker.predict(pairs)
-                    
-                    # Sort nodes by reranking score (descending)
-                    scored_nodes = list(zip(candidate_nodes, rerank_scores))
-                    scored_nodes.sort(key=lambda x: x[1], reverse=True)
-                    
-                    # Take top-K after reranking
-                    vector_nodes = [node for node, score in scored_nodes[:top_k]]
-                    
-                    logger.info(f"Reranking complete: selected top {len(vector_nodes)} documents")
-                except Exception as e:
-                    logger.warning(f"Reranking failed: {e}. Using original retrieval.")
-                    vector_nodes = candidate_nodes[:top_k]
-            else:
-                # Not enough candidates to rerank, use all retrieved
-                vector_nodes = candidate_nodes
-                logger.info(f"Retrieved {len(vector_nodes)} candidates (< top_k, skipping rerank)")
-        else:
-            # Direct vector search without reranking
-            logger.info(f"Direct retrieval: Fetching top {top_k} results (reranker disabled)")
+        # Strategy-specific retrieval
+        strategy = settings.retrieval_strategy
+        
+        if strategy == "hierarchical":
+            logger.warning("retrieve() called with hierarchical strategy. Use query() instead for proper auto-merging.")
+            # Fall back to base retrieval for manual use
             retriever = self._index.as_retriever(similarity_top_k=top_k)
             vector_nodes = retriever.retrieve(query_text)
+            
+        elif strategy == "sentence_window":
+            logger.info(f"Retrieving with sentence_window strategy")
+            # Retrieve candidate nodes
+            retriever = self._index.as_retriever(similarity_top_k=top_k * 3 if use_reranker else top_k)
+            candidate_nodes = retriever.retrieve(query_text)
+            
+            # Apply window replacement
+            try:
+                postprocessor = MetadataReplacementPostProcessor(target_metadata_key="window")
+                vector_nodes = postprocessor.postprocess_nodes(candidate_nodes)
+                logger.info(f"Applied MetadataReplacementPostProcessor to {len(vector_nodes)} nodes")
+            except Exception as e:
+                logger.warning(f"Window replacement failed: {e}. Using original nodes.")
+                vector_nodes = candidate_nodes
+            
+            # Apply reranking if enabled
+            if use_reranker and len(vector_nodes) > top_k:
+                vector_nodes = self._apply_reranking(query_text, vector_nodes, top_k)
+            else:
+                vector_nodes = vector_nodes[:top_k]
+                
+        else:  # semantic or unknown
+            if use_reranker:
+                # STAGE 1: Broad retrieval - fetch more candidates for reranking
+                candidates_count = top_k * 3  # Fetch 3x for better reranking pool
+                logger.info(f"Two-stage retrieval: Fetching {candidates_count} candidates for reranking to top {top_k}")
+                retriever = self._index.as_retriever(similarity_top_k=candidates_count)
+                candidate_nodes = retriever.retrieve(query_text)
+                
+                # STAGE 2: Rerank using CrossEncoder
+                if len(candidate_nodes) > top_k:
+                    vector_nodes = self._apply_reranking(query_text, candidate_nodes, top_k)
+                else:
+                    # Not enough candidates to rerank, use all retrieved
+                    vector_nodes = candidate_nodes
+                    logger.info(f"Retrieved {len(vector_nodes)} candidates (< top_k, skipping rerank)")
+            else:
+                # Direct vector search without reranking
+                logger.info(f"Direct retrieval: Fetching top {top_k} results (reranker disabled)")
+                retriever = self._index.as_retriever(similarity_top_k=top_k)
+                vector_nodes = retriever.retrieve(query_text)
         
         # Graph retrieval (with fallback)
         try:
@@ -304,3 +392,39 @@ Key terms:"""
             graph_context = ""
         
         return vector_nodes, graph_context
+
+    def _apply_reranking(self, query_text: str, candidate_nodes: List[NodeWithScore], top_k: int) -> List[NodeWithScore]:
+        """
+        Apply reranking to candidate nodes and return top-k.
+        
+        Args:
+            query_text: Query string
+            candidate_nodes: List of candidate nodes to rerank
+            top_k: Number of top results to return after reranking
+            
+        Returns:
+            List of top-k reranked nodes
+        """
+        logger.info(f"Reranking {len(candidate_nodes)} candidates to top {top_k}")
+        try:
+            reranker = self._get_reranker()
+            
+            # Create (query, document) pairs for reranking
+            pairs = [(query_text, node.get_content()) for node in candidate_nodes]
+            
+            # Get reranking scores
+            rerank_scores = reranker.predict(pairs)
+            
+            # Sort nodes by reranking score (descending)
+            scored_nodes = list(zip(candidate_nodes, rerank_scores))
+            scored_nodes.sort(key=lambda x: x[1], reverse=True)
+            
+            # Take top-K after reranking
+            reranked_nodes = [node for node, score in scored_nodes[:top_k]]
+            
+            logger.info(f"Reranking complete: selected top {len(reranked_nodes)} documents")
+            return reranked_nodes
+            
+        except Exception as e:
+            logger.warning(f"Reranking failed: {e}. Using original retrieval order.")
+            return candidate_nodes[:top_k]

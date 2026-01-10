@@ -1,360 +1,166 @@
-# LLIX: Enterprise-Grade RAG Engine
+# Lilly-X: Hybrid RAG System (Vector + Graph) 🧠
 
-**LLIX** (Local LLM Intelligence eXtension) is a production-ready Retrieval-Augmented Generation (RAG) system featuring hybrid search, two-stage reranking, self-healing ingestion, and strict citation enforcement.
-
-Built for engineering teams requiring **precision, transparency, and control** over their knowledge base.
-
----
+Lilly-X is a high-performance **Retrieval-Augmented Generation (RAG)** system that combines the precision of **Sentence Window Retrieval** with the deep context of **Knowledge Graphs (Neo4j)**.
 
 ## 🏗️ Architecture
 
-### **2-Stage Retrieval Pipeline**
+```mermaid
+graph TD
+    %% Styles
+    classDef storage fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef process fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef ui fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
 
-**Stage 1: Broad Recall (Vector Search)**
-- Retrieves `top_k * 3` candidate documents using dense vector embeddings (BAAI/bge-m3)
-- Optimized for recall: casts a wide net to ensure relevant documents aren't missed
+    subgraph "Ingestion (The Stomach)"
+        Docs[📄 PDF / Markdown] -->|Load| Ingest[⚙️ ingest.py]
+        Ingest -->|Sentence Window| Chunks[Vector Chunks]
+        Ingest -->|Entity Extraction| Entities[Entities & Relations]
+    end
 
-**Stage 2: Precision Reranking (CrossEncoder)**
-- Applies BAAI/bge-reranker-v2-m3 CrossEncoder to all candidates
-- Scores query-document pairs with bidirectional attention
-- Returns top-k most relevant documents (default: 5)
+    subgraph "Storage (The Memory)"
+        Chunks -->|Embed & Store| Qdrant[(Qdrant Vector DB)]:::storage
+        Entities -->|Cypher Write| Neo4j[(Neo4j Graph DB)]:::storage
+    end
 
-**Result:** Best of both worlds - high recall + high precision
+    subgraph "Retrieval (The Brain)"
+        User[👤 User Query] -->|Input| App[🖥️ Streamlit App]:::ui
+        App -->|Query| RAG[🧠 rag_engine.py]:::process
+        
+        %% Paths
+        RAG -->|Path A: Similarity| Qdrant
+        Qdrant -->|Window Expansion| WindowNodes[🪟 Window Context]
+        
+        RAG -->|Path B: Entity Search| GraphOps[⚙️ graph_ops.py]:::process
+        GraphOps -->|Traverse 1-Hop| GraphFacts[🕸️ Graph Facts]
+    end
 
-```
-Query → Vector Search (25 docs) → CrossEncoder Rerank → Top 5 → LLM
-```
-
----
-
-### **Self-Healing Ingestion**
-
-**Problem:** LLMs often return malformed JSON when extracting metadata.
-
-**Solution:** Multi-layer robustness:
-1. **Direct Parse:** Attempt `json.loads()` on LLM response
-2. **JSON Repair:** Use `json-repair` library to fix common issues (trailing commas, unquoted keys)
-3. **Retry with Correction Prompt:** If parsing fails, retry with explicit schema instructions
-4. **Fallback:** Only use defaults as last resort
-
-**Result:** Metadata extraction success rate > 90% (vs. ~0% with naive parsing)
-
----
-
-### **Strict Citation Enforcement**
-
-**Persona:** LLIX acts as a "strict analyst" that MUST cite sources.
-
-**Citation Rule:**
-```
-Every claim MUST be backed by context.
-Format: [Source: filename.pdf]
-If context is empty/irrelevant: "I cannot answer this based on the available documents"
+    subgraph "Generation (The Voice)"
+        WindowNodes --> Context{🧩 Context Assembly}
+        GraphFacts --> Context
+        Context -->|Combined Prompt| LLM[🤖 Ollama / LLM]
+        LLM -->|Stream Tokens| App
+    end
 ```
 
-**Context Formatting:**
-```
-[Source: technical_spec.pdf]
-Content from document...
+## 🚀 Key Features
 
-[Source: research_paper.pdf]
-Content from another document...
-```
+- **Hybrid Retrieval**: Combines unstructured text vectors with structured graph data.
+- **Sentence Windowing**: Retrieves exact matches but feeds the LLM the surrounding context window.
+- **Thinking UI**: A visual "Chain of Thought" interface showing real-time retrieval steps.
+- **Privacy First**: Designed to run with local LLMs (Ollama) and local DBs.
 
-**Result:** Zero hallucinations, full source attribution
+## ⚡ Quickstart
 
----
-
-### **Hybrid GraphRAG**
-
-- **Vector Store:** Qdrant for semantic search
-- **Knowledge Graph:** Neo4j for entity relationships
-- **Memory:** Persistent conversation history (FIFO with configurable window)
-- **Graph Operations:** Entity resolution, query expansion
-
----
-
-## 🚀 Quick Start
-
-### **Prerequisites**
-
-- Python 3.10+
-- Docker & Docker Compose (for Neo4j and Qdrant)
-- 8GB+ RAM (for embedding models)
-
-### **1. Start Infrastructure**
+**Prerequisites**: Python 3.11 (Recommended), Docker/Podman for Databases.
 
 ```bash
-docker-compose up -d
-```
-
-This starts:
-- **Qdrant** (vector database) on port 6333
-- **Neo4j** (graph database) on port 7687/7474
-
-### **2. Install Dependencies**
-
-```bash
+# 1. Setup Environment
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-Key dependencies:
-- `llama-index` - RAG framework
-- `sentence-transformers` - CrossEncoder reranking
-- `streamlit` - Web UI
-- `json-repair` - Robust JSON parsing
-- HuggingFace models downloaded automatically on first run
+# 2. Start Infrastructure (Qdrant & Neo4j)
+podman-compose up -d  # or docker compose
 
-### **3. Configure Environment**
-
-Create `.env` file (see `.env.template`):
-
-```bash
-# LLM Configuration
-OLLAMA_BASE_URL=http://localhost:11434
-LLM_MODEL=mistral-nemo:12b
-EMBEDDING_MODEL=BAAI/bge-m3
-
-# Vector Store
-QDRANT_URL=http://127.0.0.1:6333
-QDRANT_COLLECTION=tech_books
-
-# Graph Database
-NEO4J_URL=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_password_here
-
-# Retrieval Configuration
-TOP_K_RETRIEVAL=25
-TOP_K_FINAL=5
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3
-```
-
-### **4. Ingest Documents**
-
-Place documents in `data/docs/` (PDF, TXT, MD):
-
-```bash
-./run_ingestion.sh
-```
-
-Or manually:
-```bash
+# 3. Ingest Data
+# Place your PDFs in ./data/
 python -m src.ingest
-```
 
-**What happens:**
-- Documents chunked with semantic splitting
-- Metadata extracted (type, author, dates)
-- Entities/relationships extracted for knowledge graph
-- Embeddings generated and stored in Qdrant
-- Graph written to Neo4j
-
-### **5. Launch UI**
-
-```bash
+# 4. Launch UI
 streamlit run src/app.py
 ```
 
-Access at **http://localhost:8501**
-
----
-
-## 🎛️ Configuration
-
-### **Pipeline Settings (UI)**
-
-**Retrieval Count (Top-K):** 1-10 documents
-- Default: 5
-- Controls how many documents are shown after reranking
-
-**Activate Reranker:**
-- ON: Two-stage retrieval (higher quality, +200-500ms latency)
-- OFF: Direct vector search (faster, slightly lower precision)
-
-### **Environment Variables**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_MODEL` | `mistral-nemo:12b` | Ollama model for generation |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | HuggingFace embedding model |
-| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | CrossEncoder for reranking |
-| `TOP_K_RETRIEVAL` | `25` | Candidates to retrieve (broad net) |
-| `TOP_K_FINAL` | `5` | Documents after reranking |
-| `MEMORY_WINDOW_SIZE` | `10` | Conversation turns to keep |
-| `CHUNK_SIZE` | `1024` | Text chunk size for splitting |
-
----
+Visit `http://localhost:8501` to start querying! 🎉
 
 ## 📁 Project Structure
 
 ```
-LLIX/
+lilly-x/
 ├── src/
-│   ├── app.py              # Streamlit UI with Pipeline Settings
-│   ├── rag_engine.py       # Core RAG logic with 2-stage retrieval
-│   ├── ingest.py           # Self-healing ingestion pipeline
-│   ├── evaluation.py       # RAG quality metrics (simple + ragas)
-│   ├── prompts.py          # Strict citation prompts
-│   ├── memory.py           # Conversation history manager
-│   ├── graph_ops.py        # Entity resolution & graph queries
-│   ├── config.py           # Centralized configuration
-│   └── database.py         # Qdrant & Neo4j clients
-├── data/
-│   └── docs/               # Place your PDFs/TXTs here
-├── docker-compose.yaml     # Neo4j + Qdrant setup
-├── requirements.txt        # Python dependencies
-├── .env.template           # Environment variable template
-└── README.md               # This file
+│   ├── app.py              # Streamlit UI with thinking process
+│   ├── ingest.py           # Document ingestion pipeline
+│   ├── rag_engine.py       # Hybrid retrieval engine
+│   ├── graph_ops.py        # Neo4j entity resolution
+│   ├── memory.py           # Conversation history
+│   └── config.py           # Configuration
+├── data/                   # Place documents here
+├── .env.template          # Environment variables template
+└── requirements.txt       # Python dependencies
 ```
 
----
+## ⚙️ Configuration
 
-## 🔬 Features
-
-### **Core RAG**
-- ✅ Two-stage retrieval (vector → rerank)
-- ✅ Hybrid GraphRAG (vector + knowledge graph)
-- ✅ Configurable top-k and reranker toggle
-- ✅ Strict citation enforcement
-
-### **Ingestion**
-- ✅ Self-healing JSON parsing with retry
-- ✅ Rich metadata extraction (type, author, dates)
-- ✅ Entity/relationship extraction for graph
-- ✅ Incremental ingestion (skip unchanged files)
-
-### **User Interface**
-- ✅ Clean Streamlit UI
-- ✅ Pipeline configuration controls
-- ✅ Source attribution with scores
-- ✅ Feedback collection (👍/👎 → feedback.json)
-
-### **Quality & Observability**
-- ✅ RAG evaluation module (simple + ragas)
-- ✅ Detailed retrieval logs
-- ✅ Feedback loop for continuous improvement
-
----
-
-## 📊 Evaluation
-
-### **Built-in Metrics**
-
-```python
-from src.evaluation import RAGEvaluator
-
-evaluator = RAGEvaluator(use_ragas=False)
-result = evaluator.evaluate_query(
-    query="What is...",
-    response="According to...",
-    context=["..."]
-)
-
-print(result.metrics)
-# {
-#   'context_precision': 0.85,
-#   'context_utilization': 0.72,
-#   'query_coverage': 1.0
-# }
-```
-
-### **Advanced Metrics (Optional)**
-
-Uncomment `ragas` in `requirements.txt` for LLM-based evaluation:
-- Faithfulness
-- Answer Relevancy
-- Context Precision
-- Context Recall
-
----
-
-## 🔧 Development
-
-### **Run Tests**
+Copy `.env.template` to `.env` and customize:
 
 ```bash
-# Verify imports
-python3 -c "from src.evaluation import RAGEvaluator; print('✅ OK')"
+# LLM Settings
+LLM_MODEL=mistral:latest
+EMBEDDING_MODEL=nomic-embed-text
 
-# Test evaluation module
-python -m src.evaluation
+# Retrieval Strategy (semantic | sentence_window | hierarchical)
+RETRIEVAL_STRATEGY=sentence_window
+SENTENCE_WINDOW_SIZE=3
+
+# Database Connections
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
 ```
 
-### **Feedback Analysis**
+## � Retrieval Strategies
 
+### 1. **Semantic** (Default)
+Standard semantic similarity search.
+
+### 2. **Sentence Window** (Recommended)
+Retrieves individual sentences but provides surrounding context.  
+Example: If sentence 5 matches, returns sentences 2-8 (window_size=3).
+
+### 3. **Hierarchical**
+Two-level chunking with auto-merging for structured documents.
+
+## 🎨 UI Features
+
+- **🧠 Thinking Process**: Visual progress bar (0-100%) showing retrieval steps
+- **⚡ Live Token Streaming**: Real-time generation with tokens/second metrics
+- **📊 Performance Metrics**: Detailed timing breakdown (retrieval vs generation)
+- **🔍 Debug Context**: Full transparency into retrieval decisions
+
+## 🔒 Privacy & Security
+
+- **100% Local Execution**: All LLM inference runs on your hardware via Ollama
+- **No External Services**: Documents never leave your machine
+- **Full Data Control**: No API keys or cloud dependencies required
+
+## 🐛 Troubleshooting
+
+### Qdrant Connection Failed
 ```bash
-# View feedback
-cat feedback.json | jq .
-
-# Positive/negative ratio
-cat feedback.json | jq '[.[] | .feedback] | group_by(.) | map({key: .[0], count: length})'
+podman ps | grep qdrant
+podman start qdrant
+curl http://localhost:6333/healthz
 ```
 
----
-
-## 🚢 Deployment
-
-### **Docker**
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8501
-CMD ["streamlit", "run", "src/app.py", "--server.address", "0.0.0.0"]
+### Neo4j Authentication Error
+```bash
+podman exec -it neo4j cypher-shell -u neo4j -p password
 ```
 
-### **Environment**
+### Python 3.14 Issues
+⚠️ **Use Python 3.11 or 3.12** - Python 3.14 has compatibility issues.
 
-Ensure `.env` is NOT committed to git (in `.gitignore`).
+## ℹ️ Project Status
 
-Use environment-specific configs:
-- `.env.development`
-- `.env.production`
-- `.env.staging`
+This project is a **Proof of Concept (PoC)** designed for educational purposes and architectural demonstration. It serves as a reference implementation for Advanced RAG patterns.
 
----
+Feedback and discussions are welcome via [Issues](https://github.com/yourusername/lilly-x/issues).
 
-## 🤝 Contributing
+## 📄 License
 
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/amazing-feature`
-3. Make changes and test locally
-4. Follow citation enforcement in new prompts
-5. Update documentation if needed
-6. Submit pull request
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-## 📜 License
-
-MIT License - see LICENSE file for details
-
----
-
-## 🙏 Acknowledgments
-
-**Models:**
-- BAAI/bge-m3 (embedding)
-- BAAI/bge-reranker-v2-m3 (reranking)
-- Mistral-Nemo (generation via Ollama)
-
-**Frameworks:**
-- LlamaIndex (RAG orchestration)
-- Streamlit (UI)
-- Qdrant (vector database)
-- Neo4j (graph database)
-
----
-
-## 📞 Support
-
-For issues, questions, or feature requests, please open an issue on GitHub.
-
-**Built with ❤️ by the LLIX team**
+**Built with ❤️ for privacy-conscious AI enthusiasts**

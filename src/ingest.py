@@ -22,7 +22,12 @@ from llama_index.core.extractors import (
 )
 from llama_index.core.schema import BaseNode
 from llama_index.core.bridge.pydantic import Field as LlamaField
-from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
+from llama_index.core.node_parser import (
+    SentenceSplitter, 
+    SemanticSplitterNodeParser,
+    SentenceWindowNodeParser,
+    HierarchicalNodeParser,
+)
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
@@ -307,12 +312,73 @@ def setup_llama_index():
     Settings.embed_model = embed_model
     return llm, embed_model
 
+def get_node_parser(embed_model):
+    """
+    Factory function to instantiate the correct node parser based on retrieval strategy.
+    
+    Args:
+        embed_model: The embedding model to use for semantic parsing
+        
+    Returns:
+        The appropriate node parser instance based on settings.retrieval_strategy
+    """
+    strategy = settings.retrieval_strategy
+    
+    if strategy == "semantic":
+        logger.info("Using SemanticSplitterNodeParser strategy")
+        return SemanticSplitterNodeParser(
+            buffer_size=1, 
+            breakpoint_percentile_threshold=95, 
+            embed_model=embed_model
+        )
+    
+    elif strategy == "sentence_window":
+        logger.info(f"Using SentenceWindowNodeParser strategy (window_size={settings.sentence_window_size})")
+        return SentenceWindowNodeParser(
+            window_size=settings.sentence_window_size,
+            window_metadata_key="window",
+            original_text_metadata_key="original_text",
+        )
+    
+    elif strategy == "hierarchical":
+        logger.info(f"Using HierarchicalNodeParser strategy (parent={settings.parent_chunk_size}, child={settings.child_chunk_size})")
+        return HierarchicalNodeParser(
+            chunk_sizes=[settings.parent_chunk_size, settings.child_chunk_size],
+        )
+    
+    else:
+        logger.warning(f"Unknown retrieval strategy '{strategy}', falling back to semantic")
+        return SemanticSplitterNodeParser(
+            buffer_size=1, 
+            breakpoint_percentile_threshold=95, 
+            embed_model=embed_model
+        )
+
 def get_advanced_pipeline(llm, embed_model, vector_store=None):
+    """
+    Creates an ingestion pipeline with the configured retrieval strategy.
+    
+    The pipeline always includes:
+    1. Node parser (strategy-dependent)
+    2. Structured metadata extraction
+    3. Graph extraction (runs after node parsing)
+    4. Embedding generation
+    
+    Args:
+        llm: The language model to use for extraction
+        embed_model: The embedding model to use
+        vector_store: Optional vector store for ingestion
+        
+    Returns:
+        Configured IngestionPipeline instance
+    """
+    node_parser = get_node_parser(embed_model)
+    
     return IngestionPipeline(
         transformations=[
-            SemanticSplitterNodeParser(buffer_size=1, breakpoint_percentile_threshold=95, embed_model=embed_model),
+            node_parser,
             StructuredMetadataExtractor(llm=llm),
-            GraphExtractor(llm=llm),
+            GraphExtractor(llm=llm),  # GraphExtractor always runs after node parsing
             embed_model,
         ],
         vector_store=vector_store,
