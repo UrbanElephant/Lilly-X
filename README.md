@@ -157,10 +157,6 @@ This project is a **Proof of Concept (PoC)** designed for educational purposes a
 
 Feedback and discussions are welcome via [Issues](https://github.com/yourusername/lilly-x/issues).
 
-## 📄 License
-
-MIT License - See [LICENSE](LICENSE) file for details.
-
 ---
 
 **Built with ❤️ for privacy-conscious AI enthusiasts**
