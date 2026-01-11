@@ -1,6 +1,6 @@
 """
-Lilly-X Streamlit Chat Application
-Advanced RAG interface with multi-strategy retrieval support.
+Lilly-X Streamlit Chat Application - Architect Edition
+Advanced RAG interface with Query Decomposition visualization.
 """
 
 import sys
@@ -86,7 +86,7 @@ def log_feedback(query: str, response: str, feedback_type: str):
 # PAGE CONFIGURATION
 # ========================================
 st.set_page_config(
-    page_title="Lilly-X - Advanced RAG System",
+    page_title="Lilly-X - Architect Edition",
     page_icon="🧠",
     layout="wide"
 )
@@ -129,6 +129,9 @@ if "session_id" not in st.session_state:
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "last_query_plan" not in st.session_state:
+    st.session_state.last_query_plan = None
 
 # ========================================
 # SIDEBAR - CONFIGURATION COCKPIT
@@ -190,11 +193,48 @@ with st.sidebar:
     st.markdown("---")
     
     # === Clear Chat Button ===
-    if st.button("🗑️ Clear Memory/Reset Chat", use_container_width=True):
+    if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.last_query_plan = None
         memory_mgr.clear_history(st.session_state.session_id)
         st.success("Chat history cleared!")
         st.rerun()
+    
+    st.markdown("---")
+    
+    # === 🧠 AGENT REASONING SECTION ===
+    st.markdown("### 🧠 Agent Reasoning")
+    
+    if st.session_state.last_query_plan:
+        from src.schemas import QueryPlan
+        plan = st.session_state.last_query_plan
+        
+        # Check if it's a simple or complex query
+        if len(plan.sub_queries) == 1:
+            st.info("🎯 **Direct Retrieval**")
+            st.caption("Simple query - no decomposition needed")
+        else:
+            st.success(f"🔍 **Decomposed into {len(plan.sub_queries)} Sub-Queries**")
+            
+            # Display each sub-query with intent
+            for idx, sq in enumerate(plan.sub_queries, 1):
+                intent_emoji = {
+                    "factual": "📊",
+                    "workflow": "⚙️",
+                    "comparison": "⚖️"
+                }
+                emoji = intent_emoji.get(sq.intent.value, "❓")
+                
+                with st.expander(f"{emoji} Sub-Query {idx}: {sq.intent.value.capitalize()}"):
+                    st.markdown(f"**🎯 Intent:** `{sq.intent.value.upper()}`")
+                    st.markdown(f"**📝 Focused Query:**")
+                    st.info(sq.focused_query)
+                    if sq.original_text != sq.focused_query:
+                        st.markdown(f"**💬 Original:**")
+                        st.caption(sq.original_text)
+    else:
+        st.caption("ℹ️ No query analyzed yet")
+        st.caption("Ask a question to see reasoning steps!")
     
     st.markdown("---")
     
@@ -225,19 +265,20 @@ with st.sidebar:
 # ========================================
 # MAIN CHAT INTERFACE
 # ========================================
-st.title("🧠 Lilly-X - Advanced RAG System")
-st.markdown(f"**Active Strategy:** `{settings.retrieval_strategy}` | Ask questions about your knowledge base.")
+st.title("🧠 Lilly-X - Architect Edition")
+st.markdown(f"**Persona:** Lilly-X (Advanced RAG with Query Decomposition) | **Strategy:** `{settings.retrieval_strategy}`")
 
 # Display Chat History
 for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         
-        # Assistant message: show sources with debug info
+        # Assistant message: show sources and reasoning
         if message["role"] == "assistant":
-            # === Sources Expander ===
+            
+            # === 📄 SOURCE NODES EXPANDER ===
             if "sources" in message and message["sources"]:
-                with st.expander("📚 Sources & Evidence"):
+                with st.expander("📄 Source Nodes"):
                     mode_used = "Two-Stage Reranker" if message.get("used_reranker") else "Direct Vector Search"
                     st.caption(f"**Retrieval Mode:** {mode_used}")
                     st.caption(f"**Documents Retrieved:** {len(message['sources'])}")
@@ -266,50 +307,20 @@ for idx, message in enumerate(st.session_state.messages):
                         
                         st.markdown("---")
             
-            # === Debug Context Expander ===
-            if "debug_context" in message and message["debug_context"]:
-                with st.expander("🔍 Retrieved Context (Debug)"):
-                    st.caption("**Full retrieval details including graph facts and window metadata**")
+            # === 🧠 QUERY PLAN EXPANDER (Historical) ===
+            if "query_plan" in message and message["query_plan"]:
+                with st.expander("🧠 Query Planning"):
+                    plan = message["query_plan"]
+                    st.markdown("### Query Decomposition")
+                    st.caption(f"**Original Query:** _{plan.root_query}_")
                     
-                    # === 1. Show Graph Facts (if available) ===
-                    if "graph_context" in message and message["graph_context"]:
-                        st.subheader("🕸️ Knowledge Graph Facts")
-                        graph_lines = message["graph_context"].split("\n")
-                        for line in graph_lines:
-                            if line.strip() and not line.startswith("==="):
-                                st.info(line)
-                        st.markdown("---")
+                    if len(plan.sub_queries) > 1:
+                        st.success(f"Complex query decomposed into {len(plan.sub_queries)} sub-queries")
+                        for sq_idx, sq in enumerate(plan.sub_queries, 1):
+                            intent_badge = {"factual": "📊", "workflow": "⚙️", "comparison": "⚖️"}
+                            st.markdown(f"{sq_idx}. **{intent_badge.get(sq.intent.value, '❓')} [{sq.intent.value.upper()}]** {sq.focused_query}")
                     else:
-                        st.caption("ℹ️ No graph facts retrieved for this query")
-                        st.markdown("---")
-                    
-                    st.subheader("📄 Vector Search Results")
-                    st.markdown("---")
-                    
-                    for debug_idx, debug_node in enumerate(message["debug_context"], 1):
-                        st.markdown(f"### Node {debug_idx}")
-                        
-                        # Display score
-                        st.metric("Similarity Score", f"{debug_node.get('score', 0.0):.4f}")
-                        
-                        # Display node text (original chunk)
-                        st.markdown("**📄 Node Text (Original Chunk):**")
-                        st.code(debug_node['node_text'][:500], language=None)
-                        
-                        # Display window context if available (CRUCIAL for Sentence Window verification)
-                        if 'window_context' in debug_node and debug_node['window_context']:
-                            st.markdown("**🪟 Window Context (Expanded):**")
-                            st.success("✅ Sentence Window Metadata Available")
-                            st.code(debug_node['window_context'][:800], language=None)
-                        else:
-                            st.caption("⚠️ No window context metadata (expected for semantic/hierarchical strategies)")
-                        
-                        # Display all metadata
-                        if debug_node.get('metadata'):
-                            with st.expander("📋 Full Metadata"):
-                                st.json(debug_node['metadata'])
-                        
-                        st.markdown("---")
+                        st.info("Direct retrieval - simple query")
             
             # === Feedback Buttons ===
             if "feedback" not in message:
@@ -352,15 +363,35 @@ if prompt := st.chat_input("What would you like to know?"):
         full_response = ""
         
         try:
-            # === 1. THINKING PROCESS with PROGRESS BAR ===
-            with st.status("🧠 Lilly-X is thinking...", expanded=True) as status:
+            # === 1. THINKING & PLANNING PHASE ===
+            with st.status("🧠 Thinking & Planning...", expanded=True) as status:
                 t0 = time.time()
                 
                 # Initialize Progress Bar
                 p_bar = st.progress(0)
                 
-                # Step 1: Entity Analysis (0% → 20%)
-                st.write("🔧 Analyzing query and identifying entities...")
+                # Step 1: Query Planning (0% → 15%)
+                st.write("🧠 Analyzing query structure...")
+                from src.schemas import QueryPlan
+                
+                # Actually call plan_query to get decomposition
+                query_plan = engine.plan_query(prompt)
+                
+                # Store in session state for sidebar display
+                st.session_state.last_query_plan = query_plan
+                
+                # Show decomposition result
+                if len(query_plan.sub_queries) > 1:
+                    st.write(f"  → Decomposed into {len(query_plan.sub_queries)} sub-queries")
+                    for sq_idx, sq in enumerate(query_plan.sub_queries, 1):
+                        st.write(f"     {sq_idx}. [{sq.intent.value}] {sq.focused_query[:60]}...")
+                else:
+                    st.write("  → Direct retrieval (simple query)")
+                    
+                p_bar.progress(15)
+                
+                # Step 2: Entity Analysis (15% → 25%)
+                st.write("🔍 Identifying entities...")
                 words = prompt.split()
                 potential_entities = [w.strip('.,!?') for w in words if w and w[0].isupper() and len(w) > 1]
                 resolved_entities = []
@@ -369,24 +400,24 @@ if prompt := st.chat_input("What would you like to know?"):
                     resolved_entities.append(canonical)
                 
                 time.sleep(0.05)  # Small visual pause for UX
-                p_bar.progress(20)
+                p_bar.progress(25)
                 
-                # Step 2: Memory Context (20% → 30%)
+                # Step 3: Memory Context (25% → 35%)
                 st.write("📚 Loading conversation history...")
                 session = memory_mgr.get_history(st.session_state.session_id)
                 conversation_history = session.to_string(max_turns=settings.memory_window_size)
-                p_bar.progress(30)
+                p_bar.progress(35)
                 
-                # Step 3: Hybrid Retrieval (30% → 50%)
+                # Step 4: Hybrid Retrieval (35% → 60%)
                 st.write(f"🔎 Scanning {settings.retrieval_strategy} index...")
                 vector_nodes, graph_context = engine.retrieve(
                     query_text=prompt,
                     top_k=retrieval_count,
                     use_reranker=activate_reranker
                 )
-                p_bar.progress(50)
+                p_bar.progress(60)
                 
-                # Step 4: Results Feedback (50% → 70%)
+                # Step 5: Results Feedback (60% → 75%)
                 st.write(f"✅ Found {len(vector_nodes)} relevant text chunks")
                 
                 if graph_context:
@@ -394,9 +425,9 @@ if prompt := st.chat_input("What would you like to know?"):
                     st.write(f"🕸️ Found {graph_fact_count} knowledge graph facts")
                     time.sleep(0.05)
                 
-                p_bar.progress(70)
+                p_bar.progress(75)
                 
-                # Step 5: Context Assembly (70% → 90%)
+                # Step 6: Context Assembly (75% → 90%)
                 st.write("🧩 Assembling context & building prompt...")
                 context_parts = []
                 if graph_context:
@@ -405,7 +436,7 @@ if prompt := st.chat_input("What would you like to know?"):
                 # Prepare Debug Info
                 debug_context = []
                 
-                for idx, node in enumerate(vector_nodes, 1):
+                for node_idx, node in enumerate(vector_nodes, 1):
                     meta = node.node.metadata
                     filename = meta.get('file_name', 'Unknown')
                     node_content = node.node.get_content()
@@ -429,7 +460,7 @@ if prompt := st.chat_input("What would you like to know?"):
                 context_str = "\n\n".join(context_parts)
                 p_bar.progress(90)
                 
-                # Step 6: Final Prompt (90% → 100%)
+                # Step 7: Final Prompt (90% → 100%)
                 st.write("✍️ Finalizing system prompt...")
                 final_prompt = prompts.build_qa_prompt(
                     user_query=prompt,
@@ -440,14 +471,12 @@ if prompt := st.chat_input("What would you like to know?"):
                 p_bar.progress(100)
                 retrieval_time = time.time() - t0
                 status.update(
-                    label=f"✅ Thinking complete! ({retrieval_time:.2f}s)", 
+                    label=f"✅ Planning complete! ({retrieval_time:.2f}s)", 
                     state="complete", 
                     expanded=False
                 )
             
             # === 2. GENERATION PHASE with LIVE TELEMETRY ===
-            
-            # Initialize streaming with bridging spinner (covers TTFT latency)
             from llama_index.core import Settings as LlamaSettings
             
             with st.spinner("✍️ Reading context & formulating answer..."):
@@ -513,23 +542,12 @@ if prompt := st.chat_input("What would you like to know?"):
             
             generation_time = time.time() - t_gen_start
             
-            # === Retrieval Details Expander ===
-            with st.expander("🧠 Retrieval Details"):
-                st.write(f"**Strategy:** `{settings.retrieval_strategy}`")
-                st.write(f"**Mode:** {'Two-Stage Reranker' if activate_reranker else 'Direct Vector'}")
-                st.write(f"**Retrieved:** {len(vector_nodes)} documents")
-                st.write(f"**Top-K Setting:** {retrieval_count}")
-                if conversation_history:
-                    st.write(f"**Memory:** {len(session.messages)} turns loaded")
-                if resolved_entities:
-                    st.write(f"**Entities:** {', '.join(resolved_entities[:3])}")
-            
             # === Prepare Sources for History ===
             source_data = []
-            with st.expander("📚 Sources & Evidence"):
+            with st.expander("📄 Source Nodes"):
                 mode_used = "Two-Stage Reranker" if activate_reranker else "Direct Vector Search"
                 st.caption(f"**Retrieval Mode:** {mode_used}")
-                st.caption(f"**Documents Retrieved:** {len(vector_nodes)}")
+                st.caption(f"**Documents Retrieved:** {len(vector_nodes)}**")
                 st.markdown("---")
                 
                 for src_idx, node in enumerate(vector_nodes, 1):
@@ -563,50 +581,6 @@ if prompt := st.chat_input("What would you like to know?"):
                     
                     st.markdown("---")
             
-            # === Debug Context Display ===
-            with st.expander("🔍 Retrieved Context (Debug)"):
-                st.caption("**Full retrieval details including graph facts and window metadata**")
-                
-                # === 1. Show Graph Facts (if available) ===
-                if graph_context:
-                    st.subheader("🕸️ Knowledge Graph Facts")
-                    graph_lines = graph_context.split("\n")
-                    for line in graph_lines:
-                        if line.strip() and not line.startswith("==="):
-                            st.info(line)
-                    st.markdown("---")
-                else:
-                    st.caption("ℹ️ No graph facts retrieved for this query")
-                    st.markdown("---")
-                
-                st.subheader("📄 Vector Search Results")
-                st.markdown("---")
-                
-                for debug_idx, debug_node in enumerate(debug_context, 1):
-                    st.markdown(f"### Node {debug_idx}")
-                    
-                    # Display score
-                    st.metric("Similarity Score", f"{debug_node.get('score', 0.0):.4f}")
-                    
-                    # Display node text
-                    st.markdown("**📄 Node Text (Original Chunk):**")
-                    st.code(debug_node['node_text'][:500], language=None)
-                    
-                    # Display window context if available
-                    if 'window_context' in debug_node and debug_node['window_context']:
-                        st.markdown("**🪟 Window Context (Expanded):**")
-                        st.success("✅ Sentence Window Metadata Available")
-                        st.code(debug_node['window_context'][:800], language=None)
-                    else:
-                        st.caption("⚠️ No window context metadata")
-                    
-                    # Display all metadata
-                    if debug_node.get('metadata'):
-                        with st.expander("📋 Full Metadata"):
-                            st.json(debug_node['metadata'])
-                    
-                    st.markdown("---")
-            
             # === Save to Memory ===
             memory_mgr.add_message(st.session_state.session_id, "user", prompt)
             memory_mgr.add_message(st.session_state.session_id, "assistant", full_response)
@@ -618,6 +592,7 @@ if prompt := st.chat_input("What would you like to know?"):
                 "sources": source_data,
                 "debug_context": debug_context,
                 "graph_context": graph_context,
+                "query_plan": query_plan,  # Store query plan for historical review
                 "used_reranker": activate_reranker,
                 "performance": {
                     "retrieval_time": retrieval_time,

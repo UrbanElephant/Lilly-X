@@ -246,85 +246,109 @@ class GraphOperations:
     
     def get_entity_context(self, query: str, limit: int = 10) -> List[str]:
         """
-        Retrieves context from Neo4j based on entities found in the query.
+        Retrieves context from Neo4j using multi-hop graph traversal.
         
-        This method extracts potential entities from the query using heuristics,
-        then queries the graph database for 1-hop relationships involving those entities.
+        This method extracts entities from the query using LLM-based extraction,
+        then uses multi-hop graph traversal (1-2 hops) to find reasoning chains
+        and related context.
         
         Args:
             query: User query text to extract entities from
-            limit: Maximum number of graph facts to return
+            limit: Maximum number of graph paths to return
             
         Returns:
-            List of natural language facts describing entity relationships
+            List of natural language facts describing entity relationships and paths
         """
         if not self._driver:
             logger.warning("🚫 No Neo4j connection. Skipping GraphRAG.")
             return []
 
-        # 1. Extract potential entities (Simple heuristics + fallback)
+        # 1. Extract potential entities using LLM-based extraction
         entities = self._extract_entities_heuristic(query)
         
         if not entities:
             logger.debug("No entities extracted from query for graph retrieval")
             return []
 
-        logger.info(f"🕸️ Querying Graph for entities: {entities}")
+        logger.info(f"🕸️ Multi-hop graph traversal for entities: {entities[:5]}")
         facts = []
 
         try:
-            # 2. Cypher Query: Find entities and their immediate 1-hop relationships
-            # We look for nodes where the name contains the search term (case-insensitive)
-            cypher_query = """
-            UNWIND $entities AS term
-            MATCH (e)-[r]->(target)
-            WHERE toLower(e.name) CONTAINS toLower(term)
-            RETURN e.name AS source, 
-                   type(r) AS rel, 
-                   target.name AS target, 
-                   labels(e)[0] AS source_type,
-                   labels(target)[0] AS target_type
-            LIMIT $limit
-            """
+            # Import multi-hop query template
+            from src.graph_queries import CYPHER_MULTI_HOP_CONTEXT, get_multi_hop_params
             
+            # 2. For each entity, perform multi-hop traversal
             with self._driver.session() as session:
-                result = session.run(
-                    cypher_query, 
-                    entities=entities, 
-                    limit=limit
-                )
-
-                for record in result:
-                    # Format: "Entity (Type) RELATION Target (Type)"
-                    source = record.get('source', 'Unknown')
-                    source_type = record.get('source_type', '')
-                    rel = record.get('rel', 'RELATED_TO')
-                    target = record.get('target', 'Unknown')
-                    target_type = record.get('target_type', '')
+                for entity in entities[:5]:  # Limit to top 5 entities to avoid explosion
+                    # Use fuzzy entity search first to find exact matches
+                    search_query = """
+                    MATCH (e:Entity)
+                    WHERE toLower(e.name) CONTAINS toLower($term)
+                       OR any(alias IN e.aliases WHERE toLower(alias) CONTAINS toLower($term))
+                    RETURN e.name AS entity_name
+                    LIMIT 3
+                    """
                     
-                    if source_type and target_type:
-                        fact = f"{source} ({source_type}) {rel} {target} ({target_type})"
-                    else:
-                        fact = f"{source} {rel} {target}"
+                    search_result = session.run(search_query, term=entity)
+                    matched_entities = [record["entity_name"] for record in search_result]
                     
-                    facts.append(fact)
+                    if not matched_entities:
+                        logger.debug(f"No graph entities found for: {entity}")
+                        continue
+                    
+                    # 3. For each matched entity, perform multi-hop traversal
+                    for matched_entity in matched_entities:
+                        params = get_multi_hop_params(
+                            entity_name=matched_entity,
+                            max_results=limit,
+                            include_documents=False  # Exclude Document nodes for cleaner paths
+                        )
+                        
+                        result = session.run(CYPHER_MULTI_HOP_CONTEXT, **params)
+                        
+                        for record in result:
+                            source = record.get('source_entity', 'Unknown')
+                            source_type = record.get('source_type', '')
+                            related = record.get('related_entity', 'Unknown')
+                            related_type = record.get('related_type', '')
+                            rel_chain = record.get('relationship_chain', [])
+                            hop_distance = record.get('hop_distance', 0)
+                            
+                            # Format path as natural language
+                            if rel_chain:
+                                # Multi-hop path
+                                rel_str = " → ".join(rel_chain)
+                                fact = f"{source} ({source_type}) --[{rel_str}]--> {related} ({related_type}) [distance: {hop_distance}]"
+                            else:
+                                # Direct connection
+                                fact = f"{source} ({source_type}) → {related} ({related_type})"
+                            
+                            facts.append(fact)
+                            
+                            # Stop if we have enough facts
+                            if len(facts) >= limit:
+                                break
+                    
+                    if len(facts) >= limit:
+                        break
 
             if facts:
-                logger.info(f"✅ Retrieved {len(facts)} graph facts.")
+                logger.info(f"✅ Retrieved {len(facts)} multi-hop graph paths.")
             else:
-                logger.debug("No graph facts found for extracted entities")
+                logger.debug("No graph paths found for extracted entities")
             
         except Exception as e:
-            logger.error(f"❌ Graph retrieval failed: {e}")
+            logger.error(f"❌ Multi-hop graph retrieval failed: {e}")
             
         return facts
 
     def _extract_entities_heuristic(self, text: str) -> List[str]:
         """
-        Extracts potential named entities using basic NLP heuristics.
+        Extracts potential named entities using LLM-based extraction.
         
-        Uses capitalized words as a simple Named Entity Recognition (NER) approach
-        to avoid heavy dependencies while still providing reasonable entity extraction.
+        This method replaces the previous regex-based capitalization heuristic
+        with a proper LLM call to extract both capitalized entities AND lowercase
+        technical terms (e.g., "backpropagation", "neo4j", "LoRA").
         
         Args:
             text: Text to extract entities from
@@ -332,36 +356,93 @@ class GraphOperations:
         Returns:
             List of potential entity names
         """
-        # 1. Look for capitalized words (simple NER)
-        capitalized = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', text)
+        try:
+            # Import here to avoid circular dependency
+            from llama_index.core import Settings
+            from src.prompts import ENTITY_EXTRACTION_PROMPT
+            import json
+            
+            # Build prompt with the user query
+            prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
+            
+            # Call LLM to extract entities
+            logger.debug(f"🔍 Extracting entities using LLM for: {text[:100]}...")
+            response = Settings.llm.complete(prompt)
+            response_text = response.text.strip()
+            
+            # Parse JSON response
+            # Handle code blocks if present
+            if "```json" in response_text:
+                # Extract JSON from code block
+                json_start = response_text.find("[")
+                json_end = response_text.rfind("]") + 1
+                if json_start != -1 and json_end > json_start:
+                    response_text = response_text[json_start:json_end]
+            elif "```" in response_text:
+                # Remove markdown code fences
+                response_text = response_text.replace("```", "").strip()
+            
+            # Parse JSON array
+            entities = json.loads(response_text)
+            
+            if not isinstance(entities, list):
+                logger.warning(f"LLM returned non-list response: {response_text[:100]}")
+                return []
+            
+            # Filter and clean entities
+            cleaned_entities = []
+            for entity in entities:
+                if isinstance(entity, str) and len(entity) > 1:
+                    cleaned_entities.append(entity.strip())
+            
+            logger.info(f"✅ Extracted {len(cleaned_entities)} entities: {cleaned_entities[:10]}")
+            return cleaned_entities
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM JSON response for entity extraction: {e}")
+            # Fallback to simple keyword extraction
+            return self._fallback_entity_extraction(text)
+        except Exception as e:
+            logger.error(f"Entity extraction failed: {e}")
+            # Fallback to simple keyword extraction
+            return self._fallback_entity_extraction(text)
+    
+    def _fallback_entity_extraction(self, text: str) -> List[str]:
+        """
+        Fallback entity extraction using simple keyword heuristics.
         
-        # 2. Filter out common stop words and question words
+        Used when LLM extraction fails.
+        
+        Args:
+            text: Text to extract entities from
+            
+        Returns:
+            List of potential entity names
+        """
+        # Simple fallback: extract words longer than 3 characters
         ignore = {
-            'Who', 'What', 'Where', 'When', 'Why', 'How', 
-            'Is', 'Are', 'Was', 'Were', 'The', 'A', 'An', 
-            'In', 'On', 'For', 'To', 'Of', 'At', 'By', 'From',
-            'Do', 'Does', 'Did', 'Can', 'Could', 'Should', 'Would',
-            'Tell', 'Me', 'About', 'Explain', 'Describe'
+            'who', 'what', 'where', 'when', 'why', 'how', 
+            'is', 'are', 'was', 'were', 'the', 'a', 'an', 
+            'in', 'on', 'for', 'to', 'of', 'at', 'by', 'from',
+            'do', 'does', 'did', 'can', 'could', 'should', 'would',
+            'tell', 'me', 'about', 'explain', 'describe', 'this', 'that'
         }
-        entities = [w for w in capitalized if w not in ignore]
         
-        # 3. Fallback: If query is short and no capitalized words, use key terms
-        if not entities and len(text.split()) < 5:
-            # Simple fallback for short queries like "python" or "neo4j"
-            words = text.split()
-            entities = [
-                w for w in words 
-                if len(w) > 3 and w.lower() not in {i.lower() for i in ignore}
-            ]
+        words = text.lower().split()
+        entities = [
+            w for w in words 
+            if len(w) > 3 and w not in ignore
+        ]
         
-        # 4. Remove duplicates while preserving order
+        # Remove duplicates while preserving order
         seen = set()
         unique_entities = []
         for entity in entities:
-            if entity.lower() not in seen:
-                seen.add(entity.lower())
+            if entity not in seen:
+                seen.add(entity)
                 unique_entities.append(entity)
         
+        logger.debug(f"Fallback extraction returned {len(unique_entities)} entities")
         return unique_entities
 
 

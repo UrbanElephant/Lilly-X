@@ -38,7 +38,7 @@ services:
       - "7474:7474" # HTTP
       - "7687:7687" # Bolt
     volumes:
-      - ./neo4j_data:/data
+      - ./neo4j_data:/data:Z
     environment:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
       - NEO4J_PLUGINS=["apoc","graph-data-science"]

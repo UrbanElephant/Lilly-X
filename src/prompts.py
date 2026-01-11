@@ -205,6 +205,93 @@ def log_prompt_stats(prompt: str) -> dict:
 
 
 # ============================================================
+# Query Planning Prompt (Reasoning-GraphRAG)
+# ============================================================
+
+def get_query_plan_prompt(user_query: str) -> str:
+    """
+    Generate a query planning prompt for the LLM.
+    
+    Uses f-string to avoid conflicts with JSON braces that would occur with .format().
+    
+    Args:
+        user_query: The original user query to analyze
+        
+    Returns:
+        Complete prompt string for query decomposition
+    """
+    return f"""You are a query analysis expert. Your task is to analyze user queries and determine if they should be decomposed into sub-queries for better retrieval.
+
+**Guidelines**:
+1. **Simple queries** (single topic, single question): Keep as one sub-query
+   - Example: "What is Python?" → 1 sub-query
+   - Example: "Explain authentication" → 1 sub-query
+
+2. **Complex queries** (multiple topics, multiple questions): Split into atomic sub-queries (max 3)
+   - Example: "How does authentication work and how does it compare to authorization?" → 2 sub-queries
+   - Example: "What is backpropagation, how is it used in training, and what are its limitations?" → 3 sub-queries
+
+3. **Intent Classification**: For each sub-query, classify the intent:
+   - `factual`: Asking for definitions, facts, or information
+   - `workflow`: Asking how something works or step-by-step processes
+   - `comparison`: Asking to compare or contrast multiple things
+
+**Output Format**: Return ONLY valid JSON matching this schema (no markdown code blocks):
+{{
+  "root_query": "original user query",
+  "sub_queries": [
+    {{
+      "original_text": "portion of original query this addresses",
+      "focused_query": "clear, self-contained question optimized for retrieval",
+      "intent": "factual|workflow|comparison"
+    }}
+  ]
+}}
+
+**IMPORTANT**: 
+- Output ONLY raw JSON. No markdown code blocks (no ```json or ```).
+- No explanations, no extra text before or after the JSON.
+- Maximum 3 sub-queries. If the query has more than 3 parts, consolidate related topics.
+
+User Query: {user_query}
+
+JSON Output:"""
+
+
+# ============================================================
+# Entity Extraction Prompt (LLM-based NER)
+# ============================================================
+
+ENTITY_EXTRACTION_PROMPT = """Extract all named entities and technical terms from the following text.
+
+**Include**:
+- Named entities (people, organizations, technologies, products)
+- Technical terms and concepts (both capitalized AND lowercase)
+- Domain-specific terminology
+- Acronyms and abbreviations
+
+**Examples of what to extract**:
+- Capitalized: "Python", "TensorFlow", "OpenAI", "Microsoft"
+- Lowercase: "backpropagation", "gradient descent", "fine-tuning", "neo4j"
+- Acronyms: "RAG", "LLM", "API", "GPU"
+- Concepts: "machine learning", "neural networks", "authentication"
+
+**Exclude**:
+- Common words (the, is, are, how, what, etc.)
+- Verbs unless they are technical terms
+- Generic adjectives
+
+**Output Format**: Return ONLY a JSON array of strings (no explanations):
+```json
+["entity1", "entity2", "entity3"]
+```
+
+Text: {text}
+
+JSON Output:"""
+
+
+# ============================================================
 # QA Prompt (Simpler, Direct)
 # ============================================================
 

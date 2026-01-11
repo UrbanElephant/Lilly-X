@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         description="Neo4j database username",
     )
     neo4j_password: str = Field(
-        default="",
+        default="password",
         description="Neo4j database password",
     )
 
@@ -101,6 +101,16 @@ class Settings(BaseSettings):
     graph_expansion_depth: int = Field(
         default=2,
         description="Depth for query expansion in knowledge graph traversal",
+    )
+
+    # Query Planning Configuration (Reasoning-GraphRAG)
+    planner_max_subqueries: int = Field(
+        default=3,
+        description="Maximum number of sub-queries to generate from a complex query (prevents explosion)",
+    )
+    graph_hop_depth: int = Field(
+        default=2,
+        description="Maximum depth for multi-hop graph traversal in context retrieval",
     )
 
     # Advanced Retrieval Strategy Configuration
