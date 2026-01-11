@@ -40,19 +40,24 @@ echo ""
 
 # Check 4: Virtual Environment
 echo "4️⃣ Checking virtual environment..."
-if [ -d "venv" ]; then
-    echo "   ✅ venv directory exists"
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+    VENV_DIR="venv"
+fi
+
+if [ -d "$VENV_DIR" ]; then
+    echo "   ✅ $VENV_DIR directory exists"
     
     # Check if streamlit is installed
-    if [ -f "venv/bin/streamlit" ]; then
+    if [ -f "$VENV_DIR/bin/streamlit" ]; then
         echo "   ✅ Streamlit is installed"
     else
-        echo "   ⚠️  Streamlit not found in venv"
-        echo "   Run: source venv/bin/activate && pip install -r requirements.txt"
+        echo "   ⚠️  Streamlit not found in $VENV_DIR"
+        echo "   Run: source $VENV_DIR/bin/activate && pip install -r requirements.txt"
     fi
 else
     echo "   ❌ venv directory not found"
-    echo "   Run: python -m venv venv"
+    echo "   Run: python -m venv .venv"
 fi
 echo ""
 

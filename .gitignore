@@ -69,3 +69,14 @@ htmlcov/
 # Streamlit
 .streamlit/secrets.toml
 data/
+.venv/
+venv/
+.env
+neo4j/data/
+neo4j/import/
+neo4j/logs/
+neo4j/plugins/
+__pycache__/
+*.pyc
+
+venv/
