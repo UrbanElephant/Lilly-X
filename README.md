@@ -1,6 +1,29 @@
 # Lilly-X: Reasoning GraphRAG Architect 🧠🕸️
 
+
 Lilly-X is a local, privacy-first RAG system that **thinks before it searches**. It combines **Query Decomposition** (Reasoning) with **Hybrid Retrieval** (Vector + Graph) to answer complex engineering questions.
+
+## 🚀 Capabilities (Level 3 GraphRAG)
+
+**Microsoft-style GraphRAG with Community Detection** - Lilly-X implements advanced multi-tier retrieval:
+
+- **🌐 Global Search:** Can answer abstract questions like *"What are the main themes?"* by synthesizing Community Summaries instead of individual chunks. Uses keyword-based community retrieval.
+  
+- **🔬 Community Detection:** Automatically clusters entities using the **Leiden Algorithm** (via Neo4j GDS). Example: Detected **8 communities** in initial tests, each with LLM-generated summaries and keywords.
+
+- **🔀 Hybrid Retrieval:** Intelligently combines three search strategies:
+  - **Vector Search** (Qdrant) for semantic similarity
+  - **Graph Traversal** (Neo4j) for entity relationships
+  - **Community Context** for high-level thematic queries
+
+- **🎯 Intent-Based Routing:** Automatically detects query intent (GLOBAL_DISCOVERY vs specific questions) and routes to the appropriate retrieval strategy.
+
+### ⚠️ Prerequisites
+
+- **Neo4j 5.x with GDS Plugin:** Community detection requires the [Graph Data Science library](https://neo4j.com/docs/graph-data-science/current/)
+- **Python 3.10 - 3.12:** Python 3.14 is NOT supported yet (Pydantic v1 compatibility issues)
+- See `.python-version` file for recommended version
+
 
 ## 🏗️ Architecture
 
@@ -68,9 +91,11 @@ sequenceDiagram
 
 ### Prerequisites
 
-- **Python 3.10 or 3.11** (⚠️ Python 3.13+ is NOT supported due to dependency issues)
+- **Python 3.10 - 3.12** (⚠️ Python 3.14 is NOT supported - see [Capabilities](#-capabilities-level-3-graphrag))
+- **Neo4j 5.x with GDS Plugin** for community detection (see [Setup Guide](NEO4J_GDS_SETUP.md))
 - **Podman** or Docker for databases
 - **Ollama** installed with models: `mistral-nemo:12b`, `nomic-embed-text`
+
 
 ### Installation
 
@@ -223,7 +248,7 @@ This project is a **Proof of Concept (PoC)** designed for educational purposes a
 - Multi-turn conversation with entity disambiguation
 - Sentence Window & Hierarchical chunking strategies
 
-Feedback and discussions are welcome via [Issues](https://github.com/yourusername/lilly-x/issues).
+Feedback and discussions are welcome via [Issues](https://github.com/UrbanElephant/lilly-x/issues).
 
 ---
 

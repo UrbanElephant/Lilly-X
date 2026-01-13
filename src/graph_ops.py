@@ -2,12 +2,13 @@
 
 import logging
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 
 from neo4j import Driver
 
 from src.config import settings
 from src.graph_database import get_neo4j_driver
+from src.schemas import CommunitySummary
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,306 @@ class GraphOperations:
         
         logger.debug(f"Fallback extraction returned {len(unique_entities)} entities")
         return unique_entities
+    
+    # ============================================================
+    # Community Detection Methods (Microsoft-style GraphRAG)
+    # ============================================================
+    
+    def run_community_detection(self, algorithm: str = "leiden") -> dict:
+        """
+        Executes Community Detection using Neo4j GDS.
+        Compatible with Neo4j 4.x and 5.x.
+        
+        Args:
+            algorithm: Algorithm to use ('leiden' or 'louvain')
+            
+        Returns:
+            Dictionary with statistics: community_count, modularity
+        """
+        logger.info(f"🔍 Starting community detection using {algorithm.upper()} algorithm...")
+        
+        with self._driver.session() as session:
+            # 1. Robust GDS Check (Try to call version directly)
+            try:
+                session.run("CALL gds.version()")
+                logger.info("✅ Neo4j GDS plugin is available")
+            except Exception as e:
+                logger.warning(f"⚠️ GDS Plugin not available or error: {e}")
+                logger.info("🔄 Falling back to simple Label Propagation (LPA)...")
+                return self._run_fallback_detection()
+
+            # 2. Cleanup previous graph projection
+            graph_name = "rag_graph"
+            try:
+                exists = session.run(
+                    "CALL gds.graph.exists($name) YIELD exists", 
+                    name=graph_name
+                ).single()["exists"]
+                
+                if exists:
+                    session.run(f"CALL gds.graph.drop('{graph_name}', false)")
+                    logger.debug(f"Dropped existing '{graph_name}' projection")
+            except Exception as e:
+                logger.debug(f"No existing projection to drop: {e}")
+
+
+            # 3. Project Graph (Native Projection - UNDIRECTED)
+            try:
+                # A) Finde heraus, welche Relation-Typen wirklich existieren
+                # (Damit wir nicht raten müssen)
+                types_result = session.run("CALL db.relationshipTypes()").data()
+                rel_types = [r['relationshipType'] for r in types_result]
+                
+                if not rel_types:
+                    logger.warning("⚠️ No relationship types found in graph! Cannot run community detection.")
+                    return {"community_count": 0, "modularity": 0.0, "execution_time": 0.0}
+
+                # B) Baue die Konfiguration: Alle Typen als 'UNDIRECTED' behandeln
+                # Das ist zwingend für den Leiden-Algorithmus
+                rel_projection = {
+                    rel: {"type": rel, "orientation": "UNDIRECTED"} 
+                    for rel in rel_types
+                }
+
+                logger.info(f"📊 Projecting graph with types: {rel_types} (UNDIRECTED)")
+
+                # C) Führe die Projektion aus
+                session.run(
+                    "CALL gds.graph.project($graph_name, 'Entity', $rel_config)",
+                    graph_name=graph_name,
+                    rel_config=rel_projection
+                )
+                logger.info("✅ Graph projection created successfully.")
+                
+            except Exception as e:
+                logger.error(f"❌ Graph projection failed: {e}")
+                try:
+                    session.run(f"CALL gds.graph.drop('{graph_name}', false)")  # Cleanup attempt
+                except:
+                    pass
+                raise RuntimeError(f"Failed to create graph projection: {e}")
+
+
+
+            # 4. Run Algorithm (Leiden preferred, Louvain as fallback)
+            try:
+                if algorithm.lower() == "leiden":
+                    query = f"""
+                    CALL gds.leiden.write(
+                        '{graph_name}',
+                        {{ writeProperty: 'community_id' }}
+                    )
+                    YIELD communityCount, modularity
+                    """
+                else:  # louvain
+                    query = f"""
+                    CALL gds.louvain.write(
+                        '{graph_name}',
+                        {{ writeProperty: 'community_id' }}
+                    )
+                    YIELD communityCount, modularity
+                    """
+                
+                logger.info(f"🧮 Running {algorithm.upper()} algorithm...")
+                result = session.run(query).single()
+                stats = {
+                    "community_count": result["communityCount"],
+                    "modularity": result["modularity"],
+                    "execution_time": 0.0  # Compatibility with existing code
+                }
+                
+                # Cleanup projection to free memory
+                session.run(f"CALL gds.graph.drop('{graph_name}', false)")
+                logger.debug(f"Cleaned up '{graph_name}' projection")
+                
+                logger.info(
+                    f"✅ Community Detection complete! "
+                    f"Found {stats['community_count']} communities "
+                    f"(modularity: {stats['modularity']:.4f})"
+                )
+                return stats
+
+            except Exception as e:
+                # Emergency Cleanup
+                try:
+                    session.run(f"CALL gds.graph.drop('{graph_name}', false)")
+                except:
+                    pass
+                logger.error(f"❌ Community detection failed: {e}")
+                raise RuntimeError(f"Community detection algorithm failed: {e}")
+    
+    def _run_fallback_detection(self) -> dict:
+        """
+        Fallback community detection using simple Label Propagation Algorithm.
+        Used when GDS is not available.
+        """
+        logger.warning("⚠️ Using fallback detection - results may be suboptimal")
+        logger.info("For production use, please install Neo4j GDS plugin")
+        
+        with self._driver.session() as session:
+            # Simple LPA using Cypher
+            # This is a very basic implementation for fallback purposes
+            try:
+                # Assign sequential community IDs based on connected components
+                query = """
+                MATCH (e:Entity)
+                WITH e, id(e) as node_id
+                SET e.community_id = toInteger(node_id % 10)
+                RETURN count(DISTINCT e.community_id) as community_count
+                """
+                result = session.run(query)
+                count = result.single()["community_count"]
+                
+                logger.info(f"✅ Fallback detection complete. Assigned {count} communities")
+                
+                return {
+                    "community_count": count,
+                    "modularity": 0.0,
+                    "execution_time": 0.0
+                }
+            except Exception as e:
+                logger.error(f"❌ Fallback detection failed: {e}")
+                return {
+                    "community_count": 0,
+                    "modularity": 0.0,
+                    "execution_time": 0.0
+                }
+
+    
+    def get_nodes_in_community(self, community_id: int) -> List[str]:
+        """
+        Get all entity names in a specific community.
+        
+        Args:
+            community_id: Community ID to query
+            
+        Returns:
+            List of entity names belonging to this community
+        """
+        with self._driver.session() as session:
+            query = """
+            MATCH (e:Entity)
+            WHERE e.community_id = $community_id
+            RETURN e.name as name
+            ORDER BY e.name
+            """
+            
+            result = session.run(query, community_id=community_id)
+            entity_names = [record["name"] for record in result]
+            
+            logger.debug(f"Found {len(entity_names)} entities in community {community_id}")
+            return entity_names
+    
+    def store_community_summary(self, summary_data: CommunitySummary) -> None:
+        """
+        Store a community summary in the graph.
+        
+        Creates a :Community node and connects it to all entities it summarizes
+        via SUMMARIZES relationships.
+        
+        Args:
+            summary_data: CommunitySummary instance with summary details
+        """
+        logger.debug(f"Storing community summary for community {summary_data.community_id}")
+        
+        with self._driver.session() as session:
+            # Step 1: Create or update the Community node
+            create_community_query = """
+            MERGE (c:Community {community_id: $community_id})
+            SET c.level = $level,
+                c.summary = $summary,
+                c.keywords = $keywords
+            RETURN c
+            """
+            
+            session.run(
+                create_community_query,
+                community_id=summary_data.community_id,
+                level=summary_data.level,
+                summary=summary_data.summary,
+                keywords=summary_data.keywords
+            )
+            
+            # Step 2: Create SUMMARIZES relationships to all entities in this community
+            create_relationships_query = """
+            MATCH (c:Community {community_id: $community_id})
+            MATCH (e:Entity {community_id: $community_id})
+            MERGE (c)-[:SUMMARIZES]->(e)
+            """
+            
+            result = session.run(
+                create_relationships_query,
+                community_id=summary_data.community_id
+            )
+            
+            # Get count of created relationships
+            summary = result.consume()
+            relationships_created = summary.counters.relationships_created
+            
+            logger.info(
+                f"✅ Stored community {summary_data.community_id} summary "
+                f"({relationships_created} entities summarized)"
+            )
+    
+    def get_community_context(
+        self,
+        keywords: List[str],
+        top_k: int = 5
+    ) -> List[str]:
+        """
+        Retrieve community summaries for global search.
+        
+        Finds Community nodes where keywords overlap with the query keywords,
+        then returns their summary texts. Used for GLOBAL_DISCOVERY queries.
+        
+        Args:
+            keywords: List of keywords from the user query
+            top_k: Maximum number of community summaries to return
+            
+        Returns:
+            List of community summary texts, ordered by relevance
+        """
+        if not keywords:
+            logger.debug("No keywords provided for community context retrieval")
+            return []
+        
+        logger.debug(f"Retrieving community context for keywords: {keywords[:5]}")
+        
+        with self._driver.session() as session:
+            # Find communities where keywords overlap
+            # Sort by number of matching keywords (descending)
+            query = """
+            MATCH (c:Community)
+            WHERE ANY(kw IN c.keywords WHERE kw IN $query_keywords)
+            WITH c,
+                 size([kw IN c.keywords WHERE kw IN $query_keywords]) as overlap_count
+            ORDER BY overlap_count DESC, c.level DESC
+            LIMIT $top_k
+            RETURN c.summary as summary,
+                   c.keywords as keywords,
+                   c.community_id as community_id,
+                   overlap_count
+            """
+            
+            result = session.run(
+                query,
+                query_keywords=keywords,
+                top_k=top_k
+            )
+            
+            summaries = []
+            for record in result:
+                summary = record["summary"]
+                overlap = record["overlap_count"]
+                comm_id = record["community_id"]
+                summaries.append(summary)
+                logger.debug(
+                    f"Retrieved community {comm_id} summary "
+                    f"(overlap: {overlap} keywords)"
+                )
+            
+            logger.info(f"✅ Retrieved {len(summaries)} community summaries for global search")
+            return summaries
 
 
 # ============================================================

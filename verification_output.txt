@@ -1,0 +1,58 @@
+/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/bridge/pydantic.py:2: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+  import pydantic.v1 as pydantic
+Traceback (most recent call last):
+  File "/home/gerrit/Antigravity/LLIX/verify_final.py", line 7, in <module>
+    from src.rag_engine import RAGEngine
+  File "/home/gerrit/Antigravity/LLIX/src/rag_engine.py", line 13, in <module>
+    from llama_index.core import (
+    ...<2 lines>...
+    )
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/__init__.py", line 10, in <module>
+    from llama_index.core.base.response.schema import Response
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/base/response/schema.py", line 7, in <module>
+    from llama_index.core.async_utils import asyncio_run
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/async_utils.py", line 7, in <module>
+    import llama_index.core.instrumentation as instrument
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/__init__.py", line 5, in <module>
+    from llama_index.core.instrumentation.dispatcher import (
+    ...<3 lines>...
+    )
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/dispatcher.py", line 8, in <module>
+    from llama_index.core.instrumentation.event_handlers import BaseEventHandler
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/event_handlers/__init__.py", line 1, in <module>
+    from llama_index.core.instrumentation.event_handlers.base import BaseEventHandler
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/event_handlers/base.py", line 4, in <module>
+    from llama_index.core.instrumentation.events.base import BaseEvent
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/events/__init__.py", line 1, in <module>
+    from llama_index.core.instrumentation.events.base import BaseEvent
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/events/base.py", line 6, in <module>
+    from llama_index.core.instrumentation.span import active_span_id
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/span/__init__.py", line 4, in <module>
+    from llama_index.core.instrumentation.span.base import BaseSpan
+  File "/home/gerrit/.local/lib/python3.14/site-packages/llama_index/core/instrumentation/span/base.py", line 5, in <module>
+    class BaseSpan(BaseModel):
+    ...<7 lines>...
+            arbitrary_types_allowed = True
+  File "/home/gerrit/.local/lib/python3.14/site-packages/pydantic/v1/main.py", line 221, in __new__
+    inferred = ModelField.infer(
+        name=var_name,
+    ...<3 lines>...
+        config=config,
+    )
+  File "/home/gerrit/.local/lib/python3.14/site-packages/pydantic/v1/fields.py", line 504, in infer
+    return cls(
+        name=name,
+    ...<7 lines>...
+        field_info=field_info,
+    )
+  File "/home/gerrit/.local/lib/python3.14/site-packages/pydantic/v1/fields.py", line 434, in __init__
+    self.prepare()
+    ~~~~~~~~~~~~^^
+  File "/home/gerrit/.local/lib/python3.14/site-packages/pydantic/v1/fields.py", line 544, in prepare
+    self._set_default_and_type()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/gerrit/.local/lib/python3.14/site-packages/pydantic/v1/fields.py", line 563, in _set_default_and_type
+    raise errors_.ConfigError(
+        f'you need to set the type of field {self.name!r} when using `default_factory`'
+    )
+pydantic.v1.errors.ConfigError: you need to set the type of field 'id_' when using `default_factory`

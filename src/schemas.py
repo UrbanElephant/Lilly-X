@@ -5,6 +5,50 @@ from typing import List
 from pydantic import BaseModel, Field
 
 
+
+# ============================================================
+# Community Detection Models
+# ============================================================
+
+class CommunitySummary(BaseModel):
+    """Represents a community of entities and its summary.
+    
+    Communities are detected using graph algorithms (Leiden, Louvain) and
+    summarized to support global search queries in Microsoft-style GraphRAG.
+    """
+    
+    community_id: int = Field(
+        ...,
+        description="Unique identifier for this community"
+    )
+    
+    level: int = Field(
+        ...,
+        description="Hierarchical level of this community (0 = leaf, higher = more abstract)"
+    )
+    
+    summary: str = Field(
+        ...,
+        description="Natural language summary of what this community represents"
+    )
+    
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="Key terms and concepts associated with this community"
+    )
+    
+    class Config:
+        """Pydantic configuration."""
+        json_schema_extra = {
+            "example": {
+                "community_id": 1,
+                "level": 0,
+                "summary": "This community focuses on machine learning frameworks and neural networks",
+                "keywords": ["tensorflow", "pytorch", "neural networks", "deep learning"]
+            }
+        }
+
+
 # ============================================================
 # Query Intent Enumeration
 # ============================================================
@@ -15,6 +59,7 @@ class QueryIntent(str, Enum):
     FACTUAL = "factual"
     WORKFLOW = "workflow"
     COMPARISON = "comparison"
+    GLOBAL_DISCOVERY = "global_discovery"  # For abstract, high-level questions
 
 
 # ============================================================
