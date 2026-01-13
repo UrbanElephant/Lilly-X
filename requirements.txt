@@ -19,7 +19,6 @@ torch
 llama-index-postprocessor-flag-embedding-reranker
 git+https://github.com/FlagOpen/FlagEmbedding.git
 
-
 # Robust JSON Parsing
 json-repair
 
@@ -27,11 +26,6 @@ json-repair
 streamlit
 watchdog
 
-# Evaluation (Optional)
-# ragas  # Uncomment for advanced RAG evaluation metrics (requires additional dependencies)
-
-# Optional: For production deployments
-# datasets  # Required if using ragas
-sentence-transformers
-json-repair
+# Evaluation
 ragas
+datasets

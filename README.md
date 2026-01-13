@@ -136,17 +136,24 @@ Visit `http://localhost:8501` to start querying! 🎉
 LLIX/
 ├── src/
 │   ├── app.py              # Streamlit UI with reasoning visualization
-│   ├── rag_engine.py       # Core hybrid retrieval engine
+│   ├── rag_engine.py       # Core hybrid retrieval engine (Global Search added)
+│   ├── community_pipeline.py # 🆕 Community Detection & Summarization Logic
 │   ├── ingest.py           # Document ingestion pipeline
 │   ├── prompts.py          # LLM prompt templates
-│   ├── schemas.py          # QueryPlan and data models
-│   ├── graph_ops.py        # Neo4j entity resolution
+│   ├── schemas.py          # QueryPlan and data models (CommunitySummary added)
+│   ├── graph_ops.py        # Neo4j interactions (GDS algorithms)
 │   ├── memory.py           # Conversation history manager
 │   └── config.py           # Centralized configuration
+├── tests/
+│   └── verification/       # 🆕 Community detection test scripts
+│       ├── run_community_summarization.py # Script to trigger community detection
+│       ├── verify_lightweight.py          # Quick verification (Python 3.14 OK)
+│       └── README.md       # Test documentation
 ├── data/
 │   └── docs/               # Place your PDFs here
 ├── compose.yaml            # Podman/Docker infrastructure
 ├── .env                    # Environment configuration
+├── .python-version         # 🆕 Python 3.11 enforcement
 └── requirements.txt        # Python dependencies
 ```
 
