@@ -361,8 +361,9 @@ def get_advanced_pipeline(llm, embed_model, vector_store=None):
     The pipeline always includes:
     1. Node parser (strategy-dependent)
     2. Structured metadata extraction
-    3. Graph extraction (runs after node parsing)
-    4. Embedding generation
+    3. Pre-emptive reasoning (QuestionsAnsweredExtractor)
+    4. Graph extraction (runs after node parsing)
+    5. Embedding generation
     
     Args:
         llm: The language model to use for extraction
@@ -378,6 +379,16 @@ def get_advanced_pipeline(llm, embed_model, vector_store=None):
         transformations=[
             node_parser,
             StructuredMetadataExtractor(llm=llm),
+            QuestionsAnsweredExtractor(
+                questions=3,
+                llm=llm,
+                prompt_template_str=(
+                    "You are an AI assistant. Your task is to generate 3 specific questions "
+                    "that the following context explicitly answers. Avoid generic questions.\n"
+                    "Context: {context_str}\n"
+                    "Questions:"
+                )
+            ),
             GraphExtractor(llm=llm),  # GraphExtractor always runs after node parsing
             embed_model,
         ],

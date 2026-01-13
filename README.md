@@ -15,6 +15,8 @@ Lilly-X is a local, privacy-first RAG system that **thinks before it searches**.
   - **Vector Search** (Qdrant) for semantic similarity
   - **Graph Traversal** (Neo4j) for entity relationships
   - **Community Context** for high-level thematic queries
+  - **Metadata Enrichment**: Enriched with pre-computed QA pairs for logic-based matching
+
 
 - **🎯 Intent-Based Routing:** Automatically detects query intent (GLOBAL_DISCOVERY vs specific questions) and routes to the appropriate retrieval strategy.
 
@@ -81,11 +83,13 @@ sequenceDiagram
 ## 🚀 Key Features
 
 - **🧠 Query Decomposition**: Complex questions broken into atomic sub-queries
-- **🕸️ Hybrid Retrieval**: Combines dense vector search (Qdrant) with symbolic knowledge graphs (Neo4j)
+- **� Pre-Emptive Reasoning**: Generates potential user questions during document ingestion (using `QuestionsAnsweredExtractor`) to align semantic matching with user intent and reduce hallucinations
+- **�🕸️ Hybrid Retrieval**: Combines dense vector search (Qdrant) with symbolic knowledge graphs (Neo4j)
 - **🎯 Intent Classification**: Automatically identifies factual, workflow, or comparison queries
 - **📊 Thinking Process UI**: Visual sidebar showing reasoning steps in real-time
 - **🔒 100% Local**: All LLM inference runs on your hardware via Ollama
 - **🔧 Robust JSON Parsing**: Uses `json_repair` for fault-tolerant LLM output handling
+
 
 ## 🛠️ Quick Start
 
