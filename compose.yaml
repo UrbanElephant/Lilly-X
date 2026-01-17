@@ -3,21 +3,23 @@ version: '3.8'
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: qdrant
+    container_name: llix_vector_db
     restart: unless-stopped
     ports:
       - "6333:6333" # REST API
       - "6334:6334" # GRPC
     volumes:
-      - qdrant_storage:/qdrant/storage
+      - ./qdrant_storage:/qdrant/storage:Z
     environment:
-      # Optimize for high RAM usage (128GB system)
+      # Optimize for AMD Ryzen AI MAX+ 395 (16C/32T, 128GB RAM)
       # Keep vectors in RAM by setting low mmap threshold
       - QDRANT__STORAGE__PERFORMANCE__MMAP_THRESHOLD_KB=0
-      # Increase max vector size
+      # Increase max vector size for 32GB vRAM
       - QDRANT__STORAGE__PERFORMANCE__MAX_VECTORS_SIZE_GB=32
-      # Enable optimizers for better performance
-      #- QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
+      # Utilize half of the threads for index optimization (16 of 32 threads)
+      - QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS=16
+      # GRPC port configuration
+      - QDRANT__SERVICE__GRPC_PORT=6334
       # Use HNSW for fast search
       - QDRANT__STORAGE__HNSW__M=16
       - QDRANT__STORAGE__HNSW__EF_CONSTRUCT=100
@@ -43,7 +45,9 @@ services:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
       - NEO4J_PLUGINS=["apoc","graph-data-science"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
-      - NEO4J_dbms_memory_heap_max__size=2G
+      # Optimiert für MAX+ 395: Erhöhter Heap für Graph-Operationen
+      - NEO4J_dbms_memory_heap_max__size=4G
+      - NEO4J_dbms_memory_pagecache_size=8G
     networks:
       - rag-net
     healthcheck:

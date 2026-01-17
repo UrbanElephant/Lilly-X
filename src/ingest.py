@@ -119,6 +119,7 @@ class StructuredMetadataExtractor(BaseExtractor):
         
     async def aextract(self, nodes: list[BaseNode]) -> list[dict]:
         """Extract metadata from nodes with robust JSON parsing."""
+        import asyncio  # For backoff delays
         from json_repair import repair_json
         
         metadata_list = []
@@ -140,6 +141,8 @@ Text:
 JSON:"""
             
             try:
+                # Add small delay to prevent Ollama overload
+                await asyncio.sleep(0.5)
                 response = await self.llm.acomplete(prompt)
                 response_text = str(response).strip()
                 
@@ -156,6 +159,8 @@ JSON:"""
             
             # Second attempt with correction prompt
             try:
+                # Longer backoff before retry
+                await asyncio.sleep(2)
                 correction_prompt = f"""The previous response was malformed. Please provide valid JSON matching this exact schema:
 
 {json.dumps(schema_json, indent=2)}
@@ -306,7 +311,7 @@ class GraphExtractor(BaseExtractor):
 # =====================================================
 
 def setup_llama_index():
-    llm = Ollama(model=settings.llm_model, base_url=settings.ollama_base_url, request_timeout=1200.0, context_window=8192)
+    llm = Ollama(model=settings.llm_model, base_url=settings.ollama_base_url, request_timeout=300.0, context_window=8192)
     embed_model = HuggingFaceEmbedding(model_name=settings.embedding_model, cache_folder="./models")
     Settings.llm = llm
     Settings.embed_model = embed_model
@@ -424,7 +429,7 @@ def ingest_documents(docs_dir: Optional[Path] = None) -> VectorStoreIndex:
     pipeline = get_advanced_pipeline(llm, embed_model, vector_store=vector_store)
     
     logger.info("🚀 Running GraphRAG Pipeline...")
-    pipeline.run(documents=documents, show_progress=True)
+    pipeline.run(documents=documents, show_progress=True, num_workers=1)  # EMERGENCY: Complete serialization
     
     for f in files_to_process:
         ingestion_state.update_file(f)

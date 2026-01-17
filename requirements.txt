@@ -1,31 +1,51 @@
-# Core RAG Framework
-llama-index
-llama-index-vector-stores-qdrant
-llama-index-embeddings-huggingface
-llama-index-graph-stores-neo4j
+# ============================================================
+# LLIX RAG System - COMPATIBLE Dependencies
+# Python 3.12 | Stability Priority | Auto-Resolution
+# ============================================================
+
+# Core Framework (Let pip resolve compatible versions)
+llama-index-core
+llama-index-readers-file
+
+# LLM & Embeddings
 llama-index-llms-ollama
+llama-index-embeddings-huggingface
+
+# Vector & Graph Stores
+llama-index-vector-stores-qdrant
+llama-index-graph-stores-neo4j
+
+# Reranking
+llama-index-postprocessor-flag-embedding-reranker
+
+# Database Clients
+qdrant-client>=1.16.0
+neo4j>=5.20.0
 
 # Configuration & Environment
-python-dotenv
-pydantic-settings
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.0
+typing-extensions>=4.12.0
 
-# Vector & Graph Databases
-qdrant-client
-neo4j
+# Embeddings & Models
+sentence-transformers>=5.0.0
+transformers>=4.40.0
+torch>=2.4.0
 
-# Reranking & Embeddings
-sentence-transformers
-torch
-llama-index-postprocessor-flag-embedding-reranker
+# FlagEmbedding (Reranking)
 git+https://github.com/FlagOpen/FlagEmbedding.git
 
 # Robust JSON Parsing
-json-repair
+json-repair>=0.30.0
 
 # UI Framework
-streamlit
-watchdog
+streamlit>=1.40.0
+watchdog>=6.0.0
+
+# Hardware Monitoring
+psutil>=5.9.0
 
 # Evaluation
-ragas
-datasets
+ragas>=0.4.0
+datasets>=4.0.0

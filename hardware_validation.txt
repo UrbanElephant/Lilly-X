@@ -1,0 +1,9 @@
+==================================================
+🚀 LLIX HARDWARE & ENVIRONMENT VALIDATION
+==================================================
+Python Version:  3.12.12         ✅ OK
+CPU Kerne:       16 Physisch / 32 Threads
+Gesamt-RAM:      94.07 GB
+Torch Version:   2.9.1+cpu
+Intra-op Threads: 16 (Paralleles Rechnen)
+==================================================
