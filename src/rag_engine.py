@@ -1,6 +1,21 @@
 """
-Core RAG Engine logic.
-Encapsulates LlamaIndex setup and querying with support for multiple retrieval strategies.
+The Clarity Engine: Sovereign RAG Intelligence Layer
+
+This module implements the core "Clarity Engine" for Lilly-X, transforming retrieval
+from simple storage lookup into active intelligence synthesis.
+
+**Architecture:**
+- Query Planning: Decomposes complex queries into atomic sub-queries
+- Hybrid Retrieval: Combines vector (Qdrant HNSW) + graph (Neo4j) search
+- Intelligent Routing: Routes queries to vector/graph or community summaries based on intent
+- Reranking: Two-stage retrieval for precision (broad recall → rerank → top-k)
+
+**Performance Optimizations:**
+- RAM-First Vector Store (mmap_threshold_kb: 0 in compose.yaml)
+- Logarithmic HNSW indexing for sub-millisecond retrieval
+- Context-aware chunking preserves semantic coherence
+
+This is the "how we fetch" logic, distinct from the basic storage layer.
 """
 
 import logging
@@ -52,7 +67,17 @@ class RAGResponse:
 
 
 class RAGEngine:
-    """Singleton-style class to handle RAG operations with multiple retrieval strategies."""
+    """
+    The Clarity Engine: Singleton-style RAG orchestrator.
+    
+    This class implements the "Sovereign AI" vision by combining:
+    - Vector search (Qdrant HNSW) for semantic similarity
+    - Graph traversal (Neo4j) for relational context
+    - Community summaries for global/abstract queries
+    - Query planning for multi-hop reasoning
+    
+    The engine prioritizes latency and data sovereignty over cloud dependency.
+    """
     
     _instance = None
     

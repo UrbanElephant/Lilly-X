@@ -1,4 +1,23 @@
-"""Document ingestion pipeline for LLIX RAG system."""
+"""
+The Context-Aware Ingestion Pipeline: Zero-Waste Knowledge Processing
+
+This module implements the "Context-Aware" ingestion strategy for Lilly-X, transforming
+raw documents into semantically coherent, retrievable knowledge.
+
+**Force Multipliers:**
+1. Zero-Waste Indexing: Cryptographic hashing (IngestionState) detects file-level changes,
+   re-processing only modified content (hours → minutes).
+
+2. Context-Aware Chunking: Semantic Boundary Detection preserves full arguments instead
+   of random character-count splits. The system recognizes topic shifts.
+
+3. Parallel Metadata & Graph Extraction: LLM-powered entity extraction runs concurrently
+   with structured metadata extraction (document type, authors, key dates).
+
+**Trade-Off: Slow Build, Fast Query**
+We accept expensive ingestion (semantic splitting + graph extraction) to ensure
+instant retrieval during conversation. Optimizing for human productivity, not hardware efficiency.
+"""
 import json
 import logging
 import hashlib
