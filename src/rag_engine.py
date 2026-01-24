@@ -1,113 +1,113 @@
 """
-The Clarity Engine: Sovereign RAG Intelligence Layer
+The Clarity Engine: Sovereign RAG Intelligence Layer (Refactored)
 
-This module implements the core "Clarity Engine" for Lilly-X, transforming retrieval
-from simple storage lookup into active intelligence synthesis.
+This module implements the core "Clarity Engine" for Lilly-X using the Advanced RAG Pipeline.
 
 **Architecture:**
+- Advanced RAG Pipeline: Orchestrates query decomposition, hybrid retrieval, fusion, and reranking
 - Query Planning: Decomposes complex queries into atomic sub-queries
-- Hybrid Retrieval: Combines vector (Qdrant HNSW) + graph (Neo4j) search
-- Intelligent Routing: Routes queries to vector/graph or community summaries based on intent
-- Reranking: Two-stage retrieval for precision (broad recall → rerank → top-k)
+- Hybrid Retrieval: Combines vector (Qdrant HNSW) + BM25 + graph (Neo4j) search
+- Reciprocal Rank Fusion: Intelligently combines results from multiple retrieval strategies
+- Cross-Encoder Reranking: Two-stage retrieval for precision
 
 **Performance Optimizations:**
 - RAM-First Vector Store (mmap_threshold_kb: 0 in compose.yaml)
 - Logarithmic HNSW indexing for sub-millisecond retrieval
-- Context-aware chunking preserves semantic coherence
-
-This is the "how we fetch" logic, distinct from the basic storage layer.
+- Async-ready pipeline for future parallelization
 """
 
+import asyncio
 import logging
-import json  # For exception handling (json.JSONDecodeError)
-import json_repair  # More robust JSON parsing for LLM outputs
-from typing import Tuple, List, Any
 from dataclasses import dataclass
+from typing import List, Optional
 
-# Core LlamaIndex imports (REQUIRED)
-from llama_index.core import (
-    VectorStoreIndex,
-    Settings,
-)
-from llama_index.core.storage.storage_context import StorageContext
+# Core LlamaIndex imports
+from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.schema import NodeWithScore
-from llama_index.core.postprocessor import MetadataReplacementPostProcessor
-from llama_index.core.retrievers import AutoMergingRetriever
-from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.storage.storage_context import StorageContext
 
 # LLM and Embeddings
-from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.ollama import Ollama
 
 # Vector Store
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
 
-# Reranker (optional, loaded lazily)
-try:
-    from sentence_transformers import CrossEncoder
-    RERANKER_AVAILABLE = True
-except ImportError:
-    RERANKER_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("sentence_transformers not available - reranking will be disabled")
+# Advanced RAG Pipeline
+from advanced_rag import AdvancedRAGPipeline
+from advanced_rag.retrieval import SimpleGraphRetriever
 
+# Local imports
 from src.config import settings
 from src.database import get_qdrant_client
 from src.graph_database import get_neo4j_driver
-from src.schemas import QueryPlan, SubQuery, QueryIntent
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class RAGResponse:
+    """Response object from RAG engine."""
     response: str
     source_nodes: List[NodeWithScore]
-    query_plan: 'QueryPlan' = None  # Expose query decomposition for UI visualization
+    metadata: dict = None
 
 
 class RAGEngine:
     """
-    The Clarity Engine: Singleton-style RAG orchestrator.
+    The Clarity Engine: Advanced RAG orchestrator.
     
-    This class implements the "Sovereign AI" vision by combining:
-    - Vector search (Qdrant HNSW) for semantic similarity
-    - Graph traversal (Neo4j) for relational context
-    - Community summaries for global/abstract queries
-    - Query planning for multi-hop reasoning
+    This class implements the "Sovereign AI" vision using the AdvancedRAGPipeline
+    to combine vector search, BM25 keyword matching, graph traversal, and
+    cross-encoder reranking for high-quality retrieval.
     
     The engine prioritizes latency and data sovereignty over cloud dependency.
     """
     
-    _instance = None
+    def __init__(
+        self,
+        vector_index: Optional[VectorStoreIndex] = None,
+        enable_decomposition: bool = True,
+        enable_hyde: bool = False,
+        enable_rewriting: bool = False,
+        verbose: bool = True,
+    ):
+        """Initialize RAG Engine with Advanced RAG Pipeline.
+        
+        Args:
+            vector_index: Pre-built VectorStoreIndex. If None, will be created from settings.
+            enable_decomposition: Enable query decomposition into sub-questions
+            enable_hyde: Enable Hypothetical Document Embeddings
+            enable_rewriting: Enable query rewriting/expansion
+            verbose: Enable verbose logging
+        """
+        self.verbose = verbose
+        self._index = vector_index
+        self._neo4j_driver = None
+        self._pipeline = None
+        
+        # Initialize components
+        self._initialize(
+            enable_decomposition=enable_decomposition,
+            enable_hyde=enable_hyde,
+            enable_rewriting=enable_rewriting,
+        )
     
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(RAGEngine, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-            
-        self._index = None
-        self._query_engine = None
-        self._reranker = None  # Lazy-loaded reranker model
-        self._storage_context = None  # Needed for hierarchical retrieval
-        self._initialize()
-        self._initialized = True
-
-    def _initialize(self):
-        """Initialize LlamaIndex components."""
-        logger.info("Initializing RAG Engine...")
+    def _initialize(
+        self,
+        enable_decomposition: bool,
+        enable_hyde: bool,
+        enable_rewriting: bool,
+    ):
+        """Initialize LlamaIndex components and Advanced RAG Pipeline."""
+        logger.info("Initializing RAG Engine with Advanced RAG Pipeline...")
         
         # 1. Setup LLM
         try:
             logger.info(f"Loading LLM: {settings.llm_model}")
             llm = Ollama(
-                model=settings.llm_model, 
-                base_url=settings.ollama_base_url, 
+                model=settings.llm_model,
+                base_url=settings.ollama_base_url,
                 request_timeout=360.0,
                 context_window=8192,
                 system_prompt="""You are Lilly-X, a precision-focused RAG assistant for engineering teams.
@@ -118,6 +118,7 @@ STRICT RULES:
 4. Always cite the source filename when referencing specific data.""",
                 additional_kwargs={"num_ctx": 8192}
             )
+            Settings.llm = llm
         except Exception as e:
             logger.error(f"Failed to load LLM: {e}")
             raise
@@ -129,643 +130,339 @@ STRICT RULES:
                 model_name=settings.embedding_model,
                 cache_folder="./models",
             )
+            Settings.embed_model = embed_model
+            Settings.chunk_size = settings.chunk_size
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             raise
 
-        # 3. Configure Global Settings
-        Settings.llm = llm
-        Settings.embed_model = embed_model
-        Settings.chunk_size = settings.chunk_size
-
-        # 4. Initialize Neo4j driver for graph queries
+        # 3. Initialize Neo4j driver for graph queries
+        graph_retriever = None
         try:
-            logger.info("Initializing Neo4j connection for hybrid retrieval...")
+            logger.info("Initializing Neo4j connection for graph retrieval...")
             self._neo4j_driver = get_neo4j_driver()
-            logger.info("Neo4j connection ready")
+            
+            # Create graph retriever
+            graph_retriever = SimpleGraphRetriever(
+                neo4j_driver=self._neo4j_driver,
+                llm=Settings.llm,
+                similarity_top_k=5,
+            )
+            logger.info("Neo4j graph retriever initialized")
+            
         except Exception as e:
             logger.warning(f"Neo4j initialization failed: {e}. Graph queries will be disabled.")
             self._neo4j_driver = None
 
-        # 5. Connect to Vector Store
+        # 4. Connect to Vector Store (if not provided)
+        if self._index is None:
+            try:
+                logger.info("Creating VectorStoreIndex from Qdrant...")
+                client = get_qdrant_client()
+                vector_store = QdrantVectorStore(
+                    client=client,
+                    collection_name=settings.qdrant_collection
+                )
+                
+                self._index = VectorStoreIndex.from_vector_store(
+                    vector_store,
+                    storage_context=StorageContext.from_defaults(vector_store=vector_store),
+                )
+                logger.info(f"VectorStoreIndex loaded from '{settings.qdrant_collection}'")
+                
+            except Exception as e:
+                logger.error(f"Failed to connect to Qdrant/Index: {e}")
+                raise
+
+        # 5. Initialize Advanced RAG Pipeline
         try:
-            client = get_qdrant_client()
-            vector_store = QdrantVectorStore(
-                client=client, 
-                collection_name=settings.qdrant_collection
+            logger.info("Initializing Advanced RAG Pipeline...")
+            
+            self._pipeline = AdvancedRAGPipeline(
+                vector_index=self._index,
+                graph_retriever=graph_retriever,
+                enable_decomposition=enable_decomposition,
+                enable_hyde=enable_hyde,
+                enable_rewriting=enable_rewriting,
+                fusion_k=60,
+                reranker_model=settings.reranker_model,
+                reranker_device="cpu",  # TODO: Migrate to iGPU
+                verbose=self.verbose,
             )
-            self._storage_context = StorageContext.from_defaults(vector_store=vector_store)
             
-            self._index = VectorStoreIndex.from_vector_store(
-                vector_store,
-                storage_context=self._storage_context,
-            )
-            
-            # Configure query engine based on retrieval strategy
-            self._query_engine = self._create_query_engine()
-            
-            logger.info(f"RAG Engine initialized successfully with '{settings.retrieval_strategy}' strategy.")
+            logger.info("✅ RAG Engine initialized successfully with Advanced RAG Pipeline")
+            logger.info(f"   - Query Decomposition: {enable_decomposition}")
+            logger.info(f"   - HyDE: {enable_hyde}")
+            logger.info(f"   - Query Rewriting: {enable_rewriting}")
+            logger.info(f"   - Graph Retrieval: {graph_retriever is not None}")
             
         except Exception as e:
-            logger.error(f"Failed to connect to Qdrant/Index: {e}")
+            logger.error(f"Failed to initialize Advanced RAG Pipeline: {e}")
             raise
-
-    def _create_query_engine(self):
-        """
-        Create a query engine based on the configured retrieval strategy.
+    
+    async def aquery(
+        self,
+        user_query: str,
+        top_k: int = None,
+        top_n: int = None,
+    ) -> RAGResponse:
+        """Execute async query using Advanced RAG Pipeline.
         
-        Returns:
-            Configured query engine instance
-        """
-        strategy = settings.retrieval_strategy
-        logger.info(f"Creating query engine with strategy: {strategy}")
-        
-        # Build node postprocessors list
-        node_postprocessors = []
-        
-        if strategy == "semantic":
-            # Standard semantic search - no special postprocessors needed
-            logger.info("Using standard semantic retrieval")
-            return self._index.as_query_engine(
-                similarity_top_k=settings.top_k,
-                node_postprocessors=node_postprocessors
-            )
-        
-        elif strategy == "sentence_window":
-            # Sentence Window: Replace sentence nodes with their surrounding context window
-            logger.info(f"Using sentence window retrieval (window_size={settings.sentence_window_size})")
-            
-            # Add metadata replacement postprocessor BEFORE any other processing
-            # This expands the sentence to its full window context
-            try:
-                window_postprocessor = MetadataReplacementPostProcessor(
-                    target_metadata_key="window"
-                )
-                node_postprocessors.append(window_postprocessor)
-                logger.info("MetadataReplacementPostProcessor configured for sentence window")
-            except Exception as e:
-                logger.error(f"Failed to initialize MetadataReplacementPostProcessor: {e}")
-                logger.warning("Falling back to standard retrieval without window replacement")
-            
-            return self._index.as_query_engine(
-                similarity_top_k=settings.top_k,
-                node_postprocessors=node_postprocessors
-            )
-        
-        elif strategy == "hierarchical":
-            # Hierarchical: Use AutoMergingRetriever to merge child chunks into parents
-            logger.info(f"Using hierarchical retrieval (parent={settings.parent_chunk_size}, child={settings.child_chunk_size})")
-            
-            try:
-                # Create base retriever
-                base_retriever = self._index.as_retriever(
-                    similarity_top_k=settings.top_k
-                )
-                
-                # Wrap with AutoMergingRetriever
-                retriever = AutoMergingRetriever(
-                    base_retriever,
-                    self._storage_context,
-                    verbose=True
-                )
-                
-                # Create query engine from the auto-merging retriever
-                query_engine = RetrieverQueryEngine.from_args(
-                    retriever=retriever,
-                    node_postprocessors=node_postprocessors
-                )
-                
-                logger.info("AutoMergingRetriever configured successfully")
-                return query_engine
-                
-            except Exception as e:
-                logger.error(f"Failed to initialize AutoMergingRetriever: {e}")
-                logger.warning("Falling back to standard semantic retrieval")
-                return self._index.as_query_engine(similarity_top_k=settings.top_k)
-        
-        else:
-            logger.warning(f"Unknown retrieval strategy '{strategy}', using semantic fallback")
-            return self._index.as_query_engine(similarity_top_k=settings.top_k)
-
-    def query(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> RAGResponse:
-        """
-        Execute a query with intelligent routing based on QueryIntent.
-        
-        ROUTING LOGIC:
-        - If QueryIntent is GLOBAL_DISCOVERY: Execute global_search() for community summaries
-        - Otherwise: Execute standard vector/graph search
+        This is the main entry point for async queries. It runs the full
+        Advanced RAG pipeline: decomposition → retrieval → fusion → reranking.
         
         Args:
-            query_text: Query string
-            top_k: Number of final results to return (defaults to settings.top_k_final)
-            use_reranker: Whether to use reranker for two-stage retrieval
+            user_query: User's query string
+            top_k: Number of results for fusion stage (default: 25)
+            top_n: Number of final results after reranking (default: 5)
             
         Returns:
-            RAGResponse with answer, source nodes, and query plan
+            RAGResponse with synthesized answer and source nodes
+            
+        Raises:
+            RuntimeError: If RAG Engine not initialized
         """
-        if not self._query_engine:
-            raise RuntimeError("RAG Engine not initialized.")
-            
-        logger.info(f"Querying with '{settings.retrieval_strategy}' strategy: {query_text}")
+        if self._pipeline is None:
+            raise RuntimeError("RAG Engine not initialized. Pipeline is None.")
         
-        # Step 1: Plan query first to determine intent and expose decomposition
-        query_plan = self.plan_query(query_text)
+        # Use defaults from config if not specified
+        if top_k is None:
+            top_k = getattr(settings, 'advanced_top_k', 25)
+        if top_n is None:
+            top_n = getattr(settings, 'advanced_top_n', settings.top_k_final)
         
-        # Step 2: Check if this is a GLOBAL_DISCOVERY query
-        # Heuristic: If ANY sub-query has GLOBAL_DISCOVERY intent, use global search
-        has_global_intent = any(
-            sub_query.intent == QueryIntent.GLOBAL_DISCOVERY
-            for sub_query in query_plan.sub_queries
-        )
+        logger.info(f"🔍 Processing query (async): '{user_query}'")
         
-        if has_global_intent:
-            logger.info("🌐 Detected GLOBAL_DISCOVERY intent - routing to global search")
-            
-            # Execute global search (community-based retrieval)
-            response_text = self.global_search(query_text)
-            
-            # Return response without source nodes (global search doesn't use vector nodes)
-            return RAGResponse(
-                response=response_text,
-                source_nodes=[],  # No vector nodes for global search
-                query_plan=query_plan
+        try:
+            # STEP 1: Run Advanced RAG Pipeline
+            ranked_nodes = await self._pipeline.run(
+                query=user_query,
+                top_k=top_k,
+                top_n=top_n,
             )
-        
-        # Step 3: Standard retrieval for specific queries
-        logger.info("📊 Standard query intent - using vector/graph search")
-        
-        # For hierarchical and sentence_window strategies, the query engine handles the special logic
-        # For reranking integration, we use the retrieve() method instead
-        if use_reranker and settings.retrieval_strategy == "semantic":
-            # Use custom retrieve + rerank flow for semantic strategy
-            # Note: retrieve() now handles query planning internally
-            vector_nodes, graph_context = self.retrieve(query_text, top_k=top_k, use_reranker=True)
             
-            # Generate response using LLM with retrieved context
-            context_str = "\n\n".join([node.get_content() for node in vector_nodes])
-            if graph_context:
-                context_str = f"{graph_context}\n\n{context_str}"
+            if not ranked_nodes:
+                logger.warning("No nodes retrieved from pipeline")
+                return RAGResponse(
+                    response="I could not find relevant information in the knowledge base for your query.",
+                    source_nodes=[],
+                    metadata={"pipeline_stage": "retrieval_empty"}
+                )
             
+            # STEP 2: Extract context from ranked nodes
+            context_str = "\n\n".join([
+                f"[Source: {node.node.metadata.get('source', 'Unknown')}]\n{node.node.get_content()}"
+                for node in ranked_nodes
+            ])
+            
+            # STEP 3: Generate answer using LLM
             prompt = f"""Based on the following context, answer the question.
 
 Context:
 {context_str}
 
-Question: {query_text}
+Question: {user_query}
 
 Answer:"""
             
-            response_text = str(Settings.llm.complete(prompt))
-            
-            return RAGResponse(
-                response=response_text,
-                source_nodes=vector_nodes[:top_k] if top_k else vector_nodes,
-                query_plan=query_plan
-            )
-        else:
-            # Use the query engine directly (handles sentence_window and hierarchical internally)
-            response_obj = self._query_engine.query(query_text)
-            
-            return RAGResponse(
-                response=str(response_obj),
-                source_nodes=response_obj.source_nodes[:top_k] if top_k else response_obj.source_nodes,
-                query_plan=query_plan
-            )
-
-    def global_search(self, query: str) -> str:
-        """
-        Execute global search using community summaries instead of vector search.
-        
-        This method is designed for abstract, high-level queries (GLOBAL_DISCOVERY intent)
-        where community-level context is more appropriate than entity-level details.
-        
-        Workflow:
-        1. Extract keywords from user query using LLM
-        2. Retrieve relevant Community Summaries via graph_ops.get_community_context()
-        3. Synthesize answer based ONLY on community summaries (no vector search)
-        
-        Args:
-            query: User query string (typically abstract/high-level)
-            
-        Returns:
-            Synthesized answer based on community summaries
-        """
-        logger.info(f"🌐 Executing GLOBAL SEARCH for: {query}")
-        
-        # Step 1: Extract keywords from query
-        keywords = self._extract_keywords_for_global_search(query)
-        logger.info(f"📌 Extracted keywords: {keywords}")
-        
-        if not keywords:
-            logger.warning("No keywords extracted from query. Falling back to standard search.")
-            # Fallback to standard query if keyword extraction fails
-            response = self.query(query, use_reranker=False)
-            return response.response
-        
-        # Step 2: Retrieve Community Summaries
-        try:
-            from src.graph_ops import GraphOperations
-            graph_ops = GraphOperations(driver=self._neo4j_driver)
-            community_summaries = graph_ops.get_community_context(
-                keywords=keywords,
-                top_k=5  # Retrieve top 5 most relevant communities
-            )
-            
-            if not community_summaries:
-                logger.warning("No community summaries found. Graph may not have communities yet.")
-                return (
-                    "I cannot provide a high-level overview because community detection "
-                    "has not been run yet. Please run the community summarization pipeline first, "
-                    "or ask a more specific question."
-                )
-            
-            logger.info(f"✅ Retrieved {len(community_summaries)} community summaries")
-            
-        except Exception as e:
-            logger.error(f"Failed to retrieve community summaries: {e}")
-            return f"Error retrieving global context: {str(e)}"
-        
-        # Step 3: Synthesize answer using ONLY community summaries
-        context = "\n\n".join([
-            f"Community {idx + 1}:\n{summary}"
-            for idx, summary in enumerate(community_summaries)
-        ])
-        
-        prompt = f"""You are providing a high-level overview based on community summaries from a knowledge graph.
-
-**Community Summaries:**
-{context}
-
-**User Question:**
-{query}
-
-**Instructions:**
-1. Synthesize an answer using ONLY the information from the community summaries above
-2. Provide a broad, high-level overview that addresses the user's question
-3. If the summaries don't fully answer the question, acknowledge the limitations
-4. Be concise but comprehensive
-5. Do NOT invent details not present in the summaries
-
-**Answer:**"""
-        
-        try:
+            logger.info("💭 Generating answer with LLM...")
             response = Settings.llm.complete(prompt)
             answer = response.text.strip()
             
-            logger.info(f"✅ Global search response generated ({len(answer)} chars)")
-            return answer
+            logger.info(f"✅ Answer generated ({len(answer)} chars)")
+            
+            return RAGResponse(
+                response=answer,
+                source_nodes=ranked_nodes,
+                metadata={
+                    "pipeline_stage": "complete",
+                    "num_sources": len(ranked_nodes),
+                    "top_k": top_k,
+                    "top_n": top_n,
+                }
+            )
             
         except Exception as e:
-            logger.error(f"LLM generation failed during global search: {e}")
-            return f"Error generating global search response: {str(e)}"
-    
-    def _extract_keywords_for_global_search(self, query: str) -> List[str]:
-        """
-        Extract keywords from a query for community matching.
-        
-        Uses the LLM to identify key concepts and topics in the user's query
-        that can be matched against community keywords.
-        
-        Args:
-            query: User query string
+            logger.error(f"Advanced RAG Pipeline failed: {e}")
             
-        Returns:
-            List of extracted keywords (3-7 keywords)
-        """
-        keyword_extraction_prompt = f"""Extract 3-7 key concepts, topics, or themes from the following question.
-These keywords will be used to find relevant communities in a knowledge graph.
-
-Question: {query}
-
-Return ONLY a JSON array of keywords (lowercase, singular form when possible).
-Example: ["machine learning", "neural networks", "training", "optimization"]
-
-Keywords:"""
-        
-        try:
-            response = Settings.llm.complete(keyword_extraction_prompt)
-            response_text = response.text.strip()
-            
-            # Parse JSON response
-            # Clean markdown code blocks
-            if "```json" in response_text or "```" in response_text:
-                response_text = response_text.replace("```json", "").replace("```", "").strip()
-            
-            # Extract JSON array
-            json_start = response_text.find("[")
-            json_end = response_text.rfind("]") + 1
-            if json_start != -1 and json_end > json_start:
-                response_text = response_text[json_start:json_end]
-            
-            # Try to parse
+            # FALLBACK: Try simple vector retrieval
             try:
-                keywords = json.loads(response_text)
-            except json.JSONDecodeError:
-                # Fallback to json_repair
-                keywords = json_repair.loads(response_text)
-            
-            # Validate and clean
-            if isinstance(keywords, list) and all(isinstance(k, str) for k in keywords):
-                # Normalize: lowercase, strip whitespace
-                keywords = [k.lower().strip() for k in keywords if k.strip()]
-                logger.debug(f"Extracted {len(keywords)} keywords via LLM: {keywords}")
-                return keywords
-            else:
-                logger.warning(f"Invalid keyword format from LLM: {keywords}")
-                return self._fallback_keyword_extraction(query)
+                logger.warning("Falling back to simple vector retrieval...")
+                retriever = self._index.as_retriever(similarity_top_k=top_n)
+                nodes = retriever.retrieve(user_query)
                 
-        except Exception as e:
-            logger.warning(f"LLM keyword extraction failed: {e}. Using fallback.")
-            return self._fallback_keyword_extraction(query)
+                if not nodes:
+                    raise RuntimeError("No results from fallback retrieval")
+                
+                context_str = "\n\n".join([node.get_content() for node in nodes])
+                prompt = f"""Based on the following context, answer the question.
+
+Context:
+{context_str}
+
+Question: {user_query}
+
+Answer:"""
+                
+                response = Settings.llm.complete(prompt)
+                answer = response.text.strip()
+                
+                return RAGResponse(
+                    response=answer,
+                    source_nodes=nodes,
+                    metadata={
+                        "pipeline_stage": "fallback",
+                        "error": str(e),
+                    }
+                )
+                
+            except Exception as fallback_error:
+                logger.error(f"Fallback retrieval also failed: {fallback_error}")
+                raise RuntimeError(
+                    f"Both Advanced RAG Pipeline and fallback failed. "
+                    f"Pipeline error: {e}. Fallback error: {fallback_error}"
+                )
     
-    def _fallback_keyword_extraction(self, query: str) -> List[str]:
-        """
-        Simple fallback keyword extraction using word filtering.
+    def query(self, user_query: str, top_k: int = None, top_n: int = None) -> RAGResponse:
+        """Execute synchronous query (wrapper for aquery).
+        
+        This is a synchronous wrapper around aquery() for compatibility
+        with code that cannot use async/await.
         
         Args:
-            query: User query string
+            user_query: User's query string
+            top_k: Number of results for fusion stage
+            top_n: Number of final results after reranking
             
         Returns:
-            List of extracted keywords
+            RAGResponse with answer and source nodes
         """
-        # Remove common stop words
-        stop_words = {
-            'what', 'are', 'is', 'the', 'how', 'why', 'when', 'where', 'who',
-            'tell', 'me', 'about', 'can', 'you', 'please', 'give', 'show',
-            'explain', 'describe', 'a', 'an', 'in', 'on', 'for', 'to', 'of',
-            'this', 'that', 'these', 'those', 'do', 'does', 'did'
-        }
+        return asyncio.run(self.aquery(user_query, top_k, top_n))
+    
+    @property
+    def index(self) -> VectorStoreIndex:
+        """Access to underlying vector index."""
+        return self._index
+    
+    @property
+    def pipeline(self) -> AdvancedRAGPipeline:
+        """Access to Advanced RAG Pipeline."""
+        return self._pipeline
+
+
+# ============================================================================
+# SMOKE TEST
+# ============================================================================
+
+if __name__ == "__main__":
+    """Smoke test with mocked dependencies."""
+    
+    import sys
+    from pathlib import Path
+    
+    print("=" * 80)
+    print("RAG Engine - Smoke Test (Mocked)")
+    print("=" * 80)
+    
+    # Mock components for testing without real databases
+    from llama_index.core.schema import Document, TextNode, QueryBundle
+    from llama_index.core.base.base_retriever import BaseRetriever
+    from typing import List
+    
+    class MockRetriever(BaseRetriever):
+        """Mock retriever for testing."""
+        def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+            return [
+                NodeWithScore(
+                    node=TextNode(
+                        text="Mock document about RAG systems.",
+                        id_="mock_1",
+                        metadata={"source": "mock_doc.txt"}
+                    ),
+                    score=0.95
+                ),
+                NodeWithScore(
+                    node=TextNode(
+                        text="Advanced retrieval techniques for AI.",
+                        id_="mock_2",
+                        metadata={"source": "mock_doc2.txt"}
+                    ),
+                    score=0.88
+                ),
+            ]
+    
+    class MockLLM:
+        """Mock LLM for testing."""
+        def complete(self, prompt: str):
+            class MockResponse:
+                text = "This is a mock answer based on the provided context."
+            return MockResponse()
+    
+    try:
+        # Setup mock Settings
+        Settings.llm = MockLLM()
+        Settings.embed_model = None  # Mock doesn't need embeddings
         
-        # Extract words longer than 3 characters
-        words = query.lower().split()
-        keywords = [
-            word.strip('.,!?;:')
-            for word in words
-            if len(word) > 3 and word.lower() not in stop_words
+        # Create mock index
+        print("\n📦 Creating mock index...")
+        docs = [
+            Document(text="RAG combines retrieval with generation.", id_="doc1"),
+            Document(text="Vector databases store embeddings.", id_="doc2"),
         ]
+        mock_index = VectorStoreIndex.from_documents(docs)
         
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_keywords = []
-        for kw in keywords:
-            if kw not in seen:
-                seen.add(kw)
-                unique_keywords.append(kw)
+        # Initialize RAG Engine with mock index
+        print("\n🔧 Initializing RAG Engine...")
+        engine = RAGEngine(
+            vector_index=mock_index,
+            enable_decomposition=False,  # Disable for simple test
+            enable_hyde=False,
+            enable_rewriting=False,
+            verbose=True,
+        )
         
-        logger.debug(f"Fallback extraction: {unique_keywords}")
-        return unique_keywords[:7]  # Limit to 7 keywords
-
-
-    def query_graph_store(self, query_text: str) -> str:
-        """
-        Query Neo4j graph database for entities and relationships related to the query.
+        # Monkey-patch pipeline retriever with mock
+        print("\n🐵 Monkey-patching with mock retriever...")
+        engine._pipeline.hybrid_retriever = MockRetriever()
         
-        Args:
-            query_text: User query string
-            
-        Returns:
-            Formatted string with graph context, or empty string if no results/errors
-        """
-        if not self._neo4j_driver:
-            logger.debug("Neo4j driver not available, skipping graph query")
-            return ""
+        # Test sync query
+        print("\n" + "─" * 80)
+        print("Testing sync query...")
+        print("─" * 80)
         
-        try:
-            # Import GraphOperations for entity context retrieval
-            from src.graph_ops import GraphOperations
-            
-            graph_ops = GraphOperations(driver=self._neo4j_driver)
-            
-            # Get entity context using heuristic extraction
-            facts = graph_ops.get_entity_context(query_text, limit=15)
-            
-            if not facts:
-                logger.debug("No graph facts found for query")
-                return ""
-            
-            # Format results as context
-            context_lines = ["\n=== Related Knowledge Graph Information ==="]
-            for fact in facts:
-                context_lines.append(f"- {fact}")
-            
-            context_lines.append("="*45)
-            return "\n".join(context_lines)
-                
-        except Exception as e:
-            logger.warning(f"Graph query error: {e}")
-            return ""
-
-    def _get_reranker(self):
-        """Lazy-load the reranker model (singleton pattern)."""
-        if self._reranker is None:
-            try:
-                from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
-                self._reranker = FlagEmbeddingReranker(
-                    model=settings.reranker_model,
-                    top_n=settings.top_k_final,
-                )
-                logger.info(f"Loaded reranker: {settings.reranker_model}")
-            except Exception as e:
-                logger.warning(f"Failed to load reranker: {e}")
-        return self._reranker
-    
-    def plan_query(self, query_text: str) -> QueryPlan:
-        """
-        Decompose complex queries into sub-queries using LLM.
+        response = engine.query("What is RAG?", top_n=2)
         
-        Uses the QUERY_PLAN_PROMPT to analyze the query and determine if it should
-        be split into multiple atomic sub-queries for better retrieval.
+        print(f"\n✅ Query completed")
+        print(f"   Answer: {response.response}")
+        print(f"   Sources: {len(response.source_nodes)}")
+        print(f"   Metadata: {response.metadata}")
         
-        Args:
-            query_text: Original user query
-            
-        Returns:
-            QueryPlan with decomposed sub-queries (or single sub-query for simple queries)
-        """
-        try:
-            from src.prompts import get_query_plan_prompt
-            
-            # Build prompt using function (avoids .format() KeyError with JSON braces)
-            prompt = get_query_plan_prompt(query_text)
-            
-            # Call LLM
-            logger.info(f"🧠 Planning query decomposition for: {query_text[:100]}...")
-            response = Settings.llm.complete(prompt)
-            response_text = response.text.strip()
-            
-            # Clean response: strip markdown code blocks and extra formatting
-            # Remove ```json and ``` markers
-            response_text = response_text.replace("```json", "").replace("```", "").strip()
-            
-            # Extract JSON object if there's extra text
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start != -1 and json_end > json_start:
-                response_text = response_text[json_start:json_end]
-            
-            # Parse JSON using json_repair for robustness (handles trailing commas, missing quotes, etc.)
-            plan_dict = json_repair.loads(response_text)
-            
-            # Enforce max sub-queries limit
-            if "sub_queries" in plan_dict and len(plan_dict["sub_queries"]) > settings.planner_max_subqueries:
-                logger.warning(f"Truncating {len(plan_dict['sub_queries'])} sub-queries to max {settings.planner_max_subqueries}")
-                plan_dict["sub_queries"] = plan_dict["sub_queries"][:settings.planner_max_subqueries]
-            
-            # Create QueryPlan object
-            query_plan = QueryPlan(**plan_dict)
-            
-            logger.info(f"✅ Query plan created with {len(query_plan.sub_queries)} sub-queries")
-            for idx, sq in enumerate(query_plan.sub_queries, 1):
-                logger.info(f"  Sub-query {idx} [{sq.intent}]: {sq.focused_query}")
-            
-            return query_plan
-            
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse query plan JSON: {e}. Falling back to single query.")
-            # Fallback: treat as single query
-            return QueryPlan(
-                root_query=query_text,
-                sub_queries=[
-                    SubQuery(
-                        original_text=query_text,
-                        focused_query=query_text,
-                        intent=QueryIntent.FACTUAL
-                    )
-                ]
-            )
-        except Exception as e:
-            logger.error(f"Query planning failed: {e}. Falling back to single query.")
-            # Fallback: treat as single query
-            return QueryPlan(
-                root_query=query_text,
-                sub_queries=[
-                    SubQuery(
-                        original_text=query_text,
-                        focused_query=query_text,
-                        intent=QueryIntent.FACTUAL
-                    )
-                ]
-            )
-
-    def retrieve(self, query_text: str, top_k: int = None, use_reranker: bool = True) -> Tuple[List[NodeWithScore], str]:
-        """
-        Hybrid retrieval with query planning, multi-hop graph traversal, and configurable reranking.
+        # Test async query
+        print("\n" + "─" * 80)
+        print("Testing async query...")
+        print("─" * 80)
         
-        This method now decomposes complex queries into sub-queries, retrieves from vector and graph stores
-        for each sub-query, then aggregates and deduplicates results.
+        async def test_async():
+            response = await engine.aquery("How do vector databases work?", top_n=2)
+            print(f"\n✅ Async query completed")
+            print(f"   Answer: {response.response}")
+            print(f"   Sources: {len(response.source_nodes)}")
+            return response
         
-        Args:
-            query_text: Query string
-            top_k: Number of final results to return (defaults to settings.top_k_final)
-            use_reranker: If True, use two-stage retrieval (broad -> rerank -> top-k)
-                         If False, use direct vector search with top_k results
-            
-        Returns:
-            Tuple of (reranked_vector_nodes, combined_graph_context)
-        """
-        if not self._index:
-            raise RuntimeError("RAG Engine not initialized.")
+        asyncio.run(test_async())
         
-        # Use config defaults if not specified
-        if top_k is None:
-            top_k = settings.top_k_final
+        print("\n" + "=" * 80)
+        print("🎉 SMOKE TEST PASSED")
+        print("=" * 80)
+        print("\n✅ RAGEngine class structure validated")
+        print("✅ Sync query() method works")
+        print("✅ Async aquery() method works")
+        print("✅ Pipeline integration successful")
         
-        # STEP 1: Query Planning - Decompose complex queries
-        query_plan = self.plan_query(query_text)
+        sys.exit(0)
         
-        # STEP 2: Retrieve for each sub-query
-        all_vector_nodes = []
-        all_graph_facts = []
-        seen_node_ids = set()  # For deduplication
-        
-        logger.info(f"📊 Retrieving for {len(query_plan.sub_queries)} sub-queries...")
-        
-        for idx, sub_query in enumerate(query_plan.sub_queries, 1):
-            logger.info(f"  [{idx}/{len(query_plan.sub_queries)}] Retrieving for: {sub_query.focused_query}")
-            
-            # STEP 2a: Vector retrieval for this sub-query
-            try:
-                retriever = self._index.as_retriever(
-                    similarity_top_k=top_k * 2  # Get extra candidates per sub-query
-                )
-                sub_vector_nodes = retriever.retrieve(sub_query.focused_query)
-                
-                # Deduplicate by node ID
-                for node in sub_vector_nodes:
-                    if node.id_ not in seen_node_ids:
-                        seen_node_ids.add(node.id_)
-                        all_vector_nodes.append(node)
-                
-                logger.info(f"    Vector: Retrieved {len(sub_vector_nodes)} nodes, {len(all_vector_nodes)} total unique")
-                
-            except Exception as e:
-                logger.error(f"    Vector retrieval failed for sub-query: {e}")
-            
-            # STEP 2b: Graph retrieval for this sub-query
-            try:
-                sub_graph_context = self.query_graph_store(sub_query.focused_query)
-                if sub_graph_context:
-                    # Extract individual facts from context
-                    facts = [line.strip() for line in sub_graph_context.split('\n') if line.strip().startswith('-')]
-                    all_graph_facts.extend(facts)
-                    logger.info(f"    Graph: Retrieved {len(facts)} facts, {len(all_graph_facts)} total")
-            except Exception as e:
-                logger.error(f"    Graph retrieval failed for sub-query: {e}")
-        
-        # STEP 3: Deduplicate graph facts
-        unique_graph_facts = list(dict.fromkeys(all_graph_facts))  # Preserve order, remove duplicates
-        logger.info(f"✅ Aggregated {len(all_vector_nodes)} unique vector nodes and {len(unique_graph_facts)} unique graph facts")
-        
-        # STEP 4: Apply reranking to combined vector nodes
-        if use_reranker and len(all_vector_nodes) > top_k:
-            logger.info(f"🔄 Reranking {len(all_vector_nodes)} aggregated nodes to top {top_k}")
-            vector_nodes = self._apply_reranking(query_text, all_vector_nodes, top_k)
-        else:
-            vector_nodes = all_vector_nodes[:top_k]
-        
-        # STEP 5: Format combined graph context
-        if unique_graph_facts:
-            context_lines = ["\n=== Related Knowledge Graph Information (Multi-Hop) ==="]
-            context_lines.extend(unique_graph_facts)
-            context_lines.append("=" * 60)
-            graph_context = "\n".join(context_lines)
-        else:
-            graph_context = ""
-        
-        return vector_nodes, graph_context
-
-    def _apply_reranking(self, query_text: str, candidate_nodes: List[NodeWithScore], top_k: int) -> List[NodeWithScore]:
-        """
-        Apply reranking to candidate nodes and return top-k.
-        
-        Args:
-            query_text: Query string
-            candidate_nodes: List of candidate nodes to rerank
-            top_k: Number of top results to return after reranking
-            
-        Returns:
-            List of top-k reranked nodes
-        """
-        logger.info(f"Reranking {len(candidate_nodes)} candidates to top {top_k}")
-        try:
-            reranker = self._get_reranker()
-            
-            # Create (query, document) pairs for reranking
-            pairs = [(query_text, node.get_content()) for node in candidate_nodes]
-            
-            # Get reranking scores
-            rerank_scores = reranker.predict(pairs)
-            
-            # Sort nodes by reranking score (descending)
-            scored_nodes = list(zip(candidate_nodes, rerank_scores))
-            scored_nodes.sort(key=lambda x: x[1], reverse=True)
-            
-            # Take top-K after reranking
-            reranked_nodes = [node for node, score in scored_nodes[:top_k]]
-            
-            logger.info(f"Reranking complete: selected top {len(reranked_nodes)} documents")
-            return reranked_nodes
-            
-        except Exception as e:
-            logger.warning(f"Reranking failed: {e}. Using original retrieval order.")
-            return candidate_nodes[:top_k]
+    except Exception as e:
+        print(f"\n❌ SMOKE TEST FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

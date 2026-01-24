@@ -1,33 +1,131 @@
-# System & Tools
-.DS_Store
-*.log
-*.tmp
-.vscode/
-.idea/
-
-# Python
+# ============================================================
+# Python Environment
+# ============================================================
 venv/
+env/
+ENV/
+.venv
+.env.local
+*.pyc
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Environment variables
-.env
-.env.local
-.env.production
+# ============================================================
+# Jupyter Notebooks
+# ============================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
-# Data Persistence (Local DB storage)
+# ============================================================
+# Environment Variables (CRITICAL - Contains Secrets)
+# ============================================================
+.env
+.env.production
+.env.development
+
+# ============================================================
+# RAG Storage (Local Vector/Graph Data)
+# ============================================================
+storage/
 qdrant_storage/
 neo4j_data/
-neo4j_import/
-neo4j_plugins/
-data/
 models/
+*.index
+*.faiss
+*.pickle
 
-# Application State
+# ============================================================
+# Ollama Data (if running locally)
+# ============================================================
+ollama_data/
+.ollama/
+
+# ============================================================
+# Logs and State Files
+# ============================================================
+*.log
+*.txt
+*.md.bak
 ingestion_state.json
-chat_history.json
-conversations/
+verification_output.txt
+connection_test_output.txt
+hardware_validation.txt
 
-# Evaluation output
+# ============================================================
+# OS-Specific
+# ============================================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.pydevproject
+
+# ============================================================
+# Build Artifacts
+# ============================================================
+build/
+dist/
+*.egg-info/
+*.egg
+*.wheel
+
+# ============================================================
+# Testing and Coverage
+# ============================================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ============================================================
+# Documentation Build
+# ============================================================
+docs/_build/
+site/
+
+# ============================================================
+# Git Keep Files (except data directories)
+# ============================================================
+!data/.gitkeep
+!data/docs/.gitkeep
+
+# ============================================================
+# Temporary Files
+# ============================================================
+*.tmp
+temp/
+tmp/
+
+# ============================================================
+# Large Model Files (if accidentally committed)
+# ============================================================
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+
+# ============================================================
+# Evaluation Outputs
+# ============================================================
 evaluation_results/
+ragas_output/
+testset_*.json
+
+# ============================================================
+# Backup Files
+# ============================================================
+*.bak
+*.backup
+*_backup.*

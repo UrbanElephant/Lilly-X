@@ -1,10 +1,20 @@
 """Central configuration management using pydantic-settings."""
 
+import os
 from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ============================================================================
+# STORAGE CONFIGURATION
+# ============================================================================
+
+# Storage directory for persisted vector index
+# Can be overridden via environment variable STORAGE_DIR
+STORAGE_DIR = os.getenv("STORAGE_DIR", "./storage")
 
 
 class Settings(BaseSettings):
@@ -139,3 +149,70 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings: Settings = Settings()
+
+
+def setup_environment():
+    """
+    Initialize LlamaIndex global Settings with configured models.
+    
+    This function should be called once at app startup to configure:
+    - LLM (Ollama with configurable model)
+    - Embedding model (HuggingFace with configurable model)
+    - Other global settings
+    
+    Optimized for stability on AMD Ryzen AI MAX-395.
+    Models can be configured via environment variables:
+    - LLM_MODEL (default: mistral-nemo)
+    - EMBED_MODEL (default: BAAI/bge-m3)
+    
+    Returns:
+        Tuple of (llm, embed_model) for reference
+    """
+    import logging
+    from llama_index.core import Settings as LlamaSettings
+    from llama_index.llms.ollama import Ollama
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+    
+    logger = logging.getLogger(__name__)
+    
+    # Get model names from environment or use defaults
+    llm_model = os.getenv("LLM_MODEL", settings.llm_model)
+    embed_model_name = os.getenv("EMBED_MODEL", settings.embedding_model)
+    
+    logger.info(f"Setting up environment with LLM: {llm_model}, Embeddings: {embed_model_name}")
+    
+    # Setup LLM with safer settings to prevent OOM/runner crashes
+    try:
+        llm = Ollama(
+            model=llm_model,
+            base_url=settings.ollama_base_url,
+            request_timeout=600.0,  # Increased timeout for complex reasoning
+            context_window=4096,    # Safer context window to prevent Ollama crashes
+            temperature=0.1,        # Low temperature for factual RAG responses
+            additional_kwargs={"num_ctx": 4096}  # Match context window
+        )
+        logger.info(f"✅ LLM configured: {llm_model}")
+    except Exception as e:
+        logger.error(f"❌ Failed to configure LLM '{llm_model}': {e}")
+        raise
+    
+    # Setup Embedding Model
+    try:
+        embed_model = HuggingFaceEmbedding(
+            model_name=embed_model_name,
+            cache_folder="./models",
+            device="cpu"  # Explicitly use CPU, saving iGPU for future optimization
+        )
+        logger.info(f"✅ Embeddings configured: {embed_model_name}")
+    except Exception as e:
+        logger.error(f"❌ Failed to configure embeddings '{embed_model_name}': {e}")
+        raise
+    
+    # Configure global Settings
+    LlamaSettings.llm = llm
+    LlamaSettings.embed_model = embed_model
+    LlamaSettings.chunk_size = settings.chunk_size
+    
+    logger.info("✅ Environment setup complete")
+    
+    return llm, embed_model
