@@ -6,6 +6,8 @@ Implements multi-strategy retrieval combining:
 - Graph search (knowledge graph traversal for entities and relationships)
 """
 
+import asyncio
+import functools
 from typing import List, Optional
 
 from llama_index.core import Settings, VectorStoreIndex
@@ -17,11 +19,19 @@ from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from llama_index.core.vector_stores import VectorStoreQuery
 
 
+# Helper function for empty async results
+async def _empty_results() -> List[NodeWithScore]:
+    """Return empty results list for disabled retrievers."""
+    return []
+
+
 class HybridRetriever(BaseRetriever):
     """Hybrid retriever combining vector, keyword (BM25), and graph search.
     
     Coordinates multiple retrieval strategies and returns combined results
     for subsequent fusion and reranking.
+    
+    Now includes async retrieval for parallel execution of multiple strategies.
     """
     
     def __init__(
@@ -82,7 +92,44 @@ class HybridRetriever(BaseRetriever):
         super().__init__()
     
     def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
-        """Retrieve nodes using hybrid strategy.
+        """Synchronous wrapper for hybrid retrieval.
+        
+        Handles nested event loops using nest_asyncio for robust operation
+        in both sync and async contexts.
+        
+        Args:
+            query_bundle: Query bundle containing query string
+            
+        Returns:
+            Combined list of nodes from all enabled retrieval strategies
+        """
+        try:
+            # Check if we're already in an event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in a running loop - need nest_asyncio
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    print("[HybridRetriever] Applied nest_asyncio for nested loop support")
+                except ImportError:
+                    print("[HybridRetriever] Warning: nest_asyncio not available, falling back to sequential retrieval")
+                    # Fallback to sequential retrieval
+                    return self._retrieve_sequential(query_bundle)
+                
+                # Now we can safely run async in nested loop
+                return asyncio.run(self._aretrieve(query_bundle))
+                
+            except RuntimeError:
+                # No running loop - safe to create new one
+                return asyncio.run(self._aretrieve(query_bundle))
+                
+        except Exception as e:
+            print(f"[HybridRetriever] Error in async retrieval, falling back to sequential: {e}")
+            return self._retrieve_sequential(query_bundle)
+    
+    def _retrieve_sequential(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+        """Fallback sequential retrieval for compatibility.
         
         Args:
             query_bundle: Query bundle containing query string
@@ -127,6 +174,88 @@ class HybridRetriever(BaseRetriever):
         
         print(f"[HybridRetriever] Total combined results: {len(all_results)}")
         return all_results
+    
+    async def _aretrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+        """Retrieve nodes using hybrid strategy (asynchronous, parallel execution).
+        
+        This async version executes all retrieval strategies in parallel using
+        asyncio.gather for maximum performance.
+        
+        Args:
+            query_bundle: Query bundle containing query string
+            
+        Returns:
+            Combined list of nodes from all enabled retrieval strategies
+        """
+        tasks = []
+        loop = asyncio.get_event_loop()
+        
+        # 1. Vector Search (Async) - Use aretrieve if available
+        if self._enable_vector and self._vector_index is not None:
+            async def vector_task():
+                try:
+                    vector_retriever = VectorIndexRetriever(
+                        index=self._vector_index,
+                        similarity_top_k=self._vector_top_k,
+                    )
+                    # Use async retrieval
+                    vector_results = await vector_retriever.aretrieve(query_bundle)
+                    print(f"[HybridRetriever] Vector search returned {len(vector_results)} results")
+                    return vector_results
+                except Exception as e:
+                    print(f"[HybridRetriever] Vector search error: {e}")
+                    return []
+            
+            tasks.append(vector_task())
+        
+        # 2. BM25 Search (Sync wrapped in executor)
+        if self._enable_bm25 and self._bm25_retriever is not None:
+            async def bm25_task():
+                try:
+                    # Wrap synchronous BM25 retrieval in executor
+                    bm25_results = await loop.run_in_executor(
+                        None,
+                        functools.partial(self._bm25_retriever.retrieve, query_bundle)
+                    )
+                    print(f"[HybridRetriever] BM25 search returned {len(bm25_results)} results")
+                    return bm25_results
+                except Exception as e:
+                    print(f"[HybridRetriever] BM25 search error: {e}")
+                    return []
+            
+            tasks.append(bm25_task())
+        
+        # 3. Graph Search (Sync wrapped in executor)
+        if self._enable_graph and self._graph_retriever is not None:
+            async def graph_task():
+                try:
+                    # Wrap synchronous graph retrieval in executor
+                    graph_results = await loop.run_in_executor(
+                        None,
+                        functools.partial(self._graph_retriever.retrieve, query_bundle)
+                    )
+                    # Limit graph results to top_k
+                    graph_results = graph_results[:self._graph_top_k]
+                    print(f"[HybridRetriever] Graph search returned {len(graph_results)} results")
+                    return graph_results
+                except Exception as e:
+                    print(f"[HybridRetriever] Graph search error: {e}")
+                    return []
+            
+            tasks.append(graph_task())
+        
+        # Execute all tasks in parallel
+        if tasks:
+            results_lists = await asyncio.gather(*tasks)
+            # Flatten results
+            all_results = []
+            for results in results_lists:
+                all_results.extend(results)
+            
+            print(f"[HybridRetriever] Total combined results (async): {len(all_results)}")
+            return all_results
+        else:
+            return []
 
 
 class SimpleGraphRetriever(BaseRetriever):
@@ -312,18 +441,30 @@ if __name__ == "__main__":
             enable_graph=False,  # No graph for basic test
         )
         
-        print("\n📝 Testing retrieval...")
+        print("\n📝 Testing synchronous retrieval...")
         query = "What are vector databases?"
         results = retriever.retrieve(query)
         
-        print(f"\n✅ Retrieved {len(results)} results:")
+        print(f"\n✅ Retrieved {len(results)} results (sync):")
         for i, result in enumerate(results[:3], 1):
             print(f"\n{i}. Score: {result.score:.4f}")
             print(f"   Text: {result.node.text[:100]}...")
             print(f"   Source: {result.node.metadata.get('source', 'Unknown')}")
         
+        # Test async retrieval
+        print("\n📝 Testing asynchronous retrieval...")
+        async def test_async():
+            results = await retriever.aretrieve(QueryBundle(query_str=query))
+            print(f"\n✅ Retrieved {len(results)} results (async):")
+            for i, result in enumerate(results[:3], 1):
+                print(f"\n{i}. Score: {result.score:.4f}")
+                print(f"   Text: {result.node.text[:100]}...")
+            return results
+        
+        asyncio.run(test_async())
+        
         print("\n" + "=" * 80)
-        print("✅ Hybrid retrieval test completed")
+        print("✅ Hybrid retrieval test completed (sync + async)")
         print("=" * 80)
         
     except Exception as e:

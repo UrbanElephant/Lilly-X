@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+echo "🔧 PATCHING INGESTION LAUNCHER..."
+
+cat << 'EOF' > run_ingestion.sh
+#!/bin/bash
+set -e
+
 # 0. Safety: Check Venv
 if [ ! -f ".venv/bin/activate" ]; then
     echo "❌ Error: .venv not found!"
@@ -32,3 +38,8 @@ echo "   - Path: $(pwd)"
 python src/ingest.py
 
 echo "✅ Ingestion Complete."
+EOF
+
+chmod +x run_ingestion.sh
+echo "✅ Launcher Patched."
+echo "👉 Now run: ./run_ingestion.sh"

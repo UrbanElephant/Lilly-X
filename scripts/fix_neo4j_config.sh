@@ -1,3 +1,9 @@
+#!/bin/bash
+set -e
+
+echo "🔧 PATCHING CONFIGURATION (RESTORING NEO4J)..."
+
+cat << 'EOF' > src/config.py
 import os
 from pathlib import Path
 from typing import Literal
@@ -86,3 +92,8 @@ def setup_environment():
         logger.error(f"❌ Setup Failed: {e}")
         raise
 
+EOF
+
+chmod +x src/config.py
+echo "✅ CONFIGURATION PATCHED."
+echo "👉 Now verify with: python -c 'from src.graph_database import get_neo4j_driver; print(get_neo4j_driver())'"
