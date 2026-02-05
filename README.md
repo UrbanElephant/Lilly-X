@@ -6,7 +6,7 @@
 [![Neo4j](https://img.shields.io/badge/Neo4j-Graph_RAG-008CC1?style=for-the-badge&logo=neo4j&logoColor=white)](https://neo4j.com/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local_Inference-000000?style=for-the-badge&logo=ollama&logoColor=white)](https://ollama.ai/)
 
-> **"Most RAG systems are deaf. They listen to a user's query, convert it into math, and fetch the nearest matching paragraph. This is 'Naive RAG', and in 2024, it is insufficient."**
+> **"Most RAG systems are deaf. They listen to a user's query, convert it into math, and fetch the nearest matching paragraph. This is 'Naive RAG', and in 2026, it is insufficient."**
 
 The **Lilly-X** framework demonstrates that a production-grade system must actively engineer the data, the query, and the result before the LLM ever generates a word. True intelligence comes from an **Agentic Pipeline**, not a database lookup.
 
