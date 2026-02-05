@@ -1,7 +1,13 @@
 # ============================================================
 # Private Documentation (User-Specific)
 # ============================================================
+# EXPLICITLY IGNORE ALL DOCS
+data/docs/*
 Docs/
+PDFs/
+
+# EXCEPTION: Keep the folder structure
+!data/docs/.gitkeep
 
 # ============================================================
 # Ollama Source Build (Local Development)
@@ -105,12 +111,6 @@ docs/_build/
 site/
 
 # ============================================================
-# Git Keep Files (except data directories)
-# ============================================================
-!data/.gitkeep
-!data/docs/.gitkeep
-
-# ============================================================
 # Temporary Files
 # ============================================================
 *.tmp
@@ -118,7 +118,7 @@ temp/
 tmp/
 
 # ============================================================
-# Large Model Files (if accidentally committed)
+# Large Model Files
 # ============================================================
 *.bin
 *.safetensors
@@ -132,10 +132,3 @@ tmp/
 evaluation_results/
 ragas_output/
 testset_*.json
-
-# ============================================================
-# Backup Files
-# ============================================================
-*.bak
-*.backup
-*_backup.*
